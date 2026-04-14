@@ -1,0 +1,59 @@
+services:
+  commerce-agent:
+    build: .
+    container_name: commerce-agent
+    restart: unless-stopped
+    ports:
+      - "${PORTAL_PORT:-10000}:10000"
+    environment:
+      PLATFORM: ${PLATFORM:-shopify}
+      PAYMENT_PROVIDER: ${PAYMENT_PROVIDER:-nexus}
+      TRANSPORT: http
+      PORTAL_PORT: "10000"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-commerce}:${POSTGRES_PASSWORD:-commerce}@postgres:5432/${POSTGRES_DB:-commerce_agent}
+      MERCHANT_DID: ${MERCHANT_DID}
+      MERCHANT_SIGNER_PRIVATE_KEY: ${MERCHANT_SIGNER_PRIVATE_KEY}
+      MERCHANT_PAYMENT_ADDRESS: ${MERCHANT_PAYMENT_ADDRESS}
+      NEXUS_CORE_URL: ${NEXUS_CORE_URL}
+      CHECKOUT_BASE_URL: ${CHECKOUT_BASE_URL}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+      PAYMENT_CURRENCY: ${PAYMENT_CURRENCY:-USD}
+      CHECKOUT_FIXED_RATE_USD_USDC: ${CHECKOUT_FIXED_RATE_USD_USDC:-1.00}
+      # Shopify
+      SHOPIFY_STORE_URL: ${SHOPIFY_STORE_URL:-}
+      SHOPIFY_STOREFRONT_TOKEN: ${SHOPIFY_STOREFRONT_TOKEN:-}
+      SHOPIFY_ADMIN_TOKEN: ${SHOPIFY_ADMIN_TOKEN:-}
+      SHOPIFY_API_VERSION: ${SHOPIFY_API_VERSION:-2025-07}
+      # WooCommerce
+      WOO_BASE_URL: ${WOO_BASE_URL:-}
+      WOO_CONSUMER_KEY: ${WOO_CONSUMER_KEY:-}
+      WOO_CONSUMER_SECRET: ${WOO_CONSUMER_SECRET:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - commerce-net
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: commerce-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-commerce}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-commerce}
+      POSTGRES_DB: ${POSTGRES_DB:-commerce_agent}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-commerce}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - commerce-net
+
+volumes:
+  pgdata:
+
+networks:
+  commerce-net:

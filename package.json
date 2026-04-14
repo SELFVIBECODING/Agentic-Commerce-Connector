@@ -1,0 +1,32 @@
+{
+  "name": "commerce-agent",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Agentic Commerce Connector — connect AI agents to any e-commerce platform via MCP + HTTP",
+  "bin": {
+    "commerce-agent": "./build/server.js"
+  },
+  "files": [
+    "build",
+    "skill.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "start": "node build/server.js",
+    "dev": "tsc --watch",
+    "test": "vitest",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "pg": "^8.13.0",
+    "viem": "^2.46.3",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.0",
+    "@types/node": "^22.13.4",
+    "typescript": "^5.7.3",
+    "vitest": "^3.1.1"
+  }
+}
