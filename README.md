@@ -63,18 +63,32 @@ The service starts on port 10000 with UCP, MCP, legacy REST, and webhook endpoin
 
 ## Configuration
 
-Set `PLATFORM` to choose the e-commerce backend; `PAYMENT_PROVIDER` stays at `nexus` for now.
+Environment variables are **split by concern** so you don't have to read the whole file to get one thing running. Pick your platform + payment provider, compose a `.env` from the relevant pieces:
 
-| Variable | Description | Default |
+```bash
+# Shopify + Nexus
+cat env-examples/base.env \
+    env-examples/shopify.env \
+    env-examples/nexus.env > .env
+
+# WooCommerce + Nexus
+cat env-examples/base.env \
+    env-examples/woocommerce.env \
+    env-examples/nexus.env > .env
+
+# Then edit .env with your real values
+```
+
+Every variable has a comment above it explaining **where to obtain it** (Shopify admin path, WooCommerce settings path, Nexus registration, etc.).
+
+| File | Required? | Scope |
 |---|---|---|
-| `PLATFORM` | `shopify` or `woocommerce` | `shopify` |
-| `PAYMENT_PROVIDER` | `nexus` (more coming) | `nexus` |
-| `PORTAL_PORT` | HTTP server port | `10000` |
-| `MERCHANT_DID` | Merchant identity | — |
-| `UCP_CART_TOKEN_SECRET` | 32+ char HMAC secret for cart tokens | — |
-| `UCP_TOKEN_TTL_SECONDS` | Cart token lifetime | `900` |
+| [`env-examples/base.env`](env-examples/base.env) | Always | Port, DB, merchant DID, UCP cart-token secret |
+| [`env-examples/shopify.env`](env-examples/shopify.env) | If `PLATFORM=shopify` | Shopify Storefront + Admin tokens |
+| [`env-examples/woocommerce.env`](env-examples/woocommerce.env) | If `PLATFORM=woocommerce` | WooCommerce REST v3 credentials |
+| [`env-examples/nexus.env`](env-examples/nexus.env) | If `PAYMENT_PROVIDER=nexus` | NUPS signer + payout address + RPC |
 
-See [.env.example](.env.example) for the full list including `SHOPIFY_*`, `WOO_*`, and `MERCHANT_SIGNER_PRIVATE_KEY`.
+See [`env-examples/README.md`](env-examples/README.md) for security notes and `.env.example` for a single-file fallback.
 
 ## API
 

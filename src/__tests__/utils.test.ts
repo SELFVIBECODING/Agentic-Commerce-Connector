@@ -276,13 +276,20 @@ describe("loadConfig", () => {
   });
 
   it("throws when MERCHANT_SIGNER_PRIVATE_KEY is missing", () => {
+    // Set platform env first so we reach the payment-provider check
+    process.env.SHOPIFY_STORE_URL = "https://store.myshopify.com";
+    process.env.SHOPIFY_STOREFRONT_TOKEN = "token";
     delete process.env.MERCHANT_SIGNER_PRIVATE_KEY;
     delete process.env.MERCHANT_PAYMENT_ADDRESS;
 
-    expect(() => loadConfig()).toThrow("MERCHANT_SIGNER_PRIVATE_KEY is required");
+    expect(() => loadConfig()).toThrow(
+      "MERCHANT_SIGNER_PRIVATE_KEY is required",
+    );
   });
 
   it("throws when MERCHANT_PAYMENT_ADDRESS is missing", () => {
+    process.env.SHOPIFY_STORE_URL = "https://store.myshopify.com";
+    process.env.SHOPIFY_STOREFRONT_TOKEN = "token";
     process.env.MERCHANT_SIGNER_PRIVATE_KEY = "0xtest";
     delete process.env.MERCHANT_PAYMENT_ADDRESS;
 
