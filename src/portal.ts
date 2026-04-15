@@ -9,6 +9,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Config } from "./config.js";
 import type { ShippingAddress, WebhookPayload } from "./types.js";
+import { handleUcpRoute, type UcpDeps } from "./ucp/routes.js";
 
 const AGENT_NAME = "Commerce Agent";
 const startedAt = Date.now();
@@ -68,6 +69,14 @@ let restHandlers: RestHandlers | null = null;
 
 export function registerRestHandlers(handlers: RestHandlers): void {
   restHandlers = handlers;
+}
+
+// ── UCP deps registry ──────────────────────────────────────────────────────
+
+let ucpDeps: UcpDeps | null = null;
+
+export function registerUcpDeps(deps: UcpDeps): void {
+  ucpDeps = deps;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -365,7 +374,19 @@ async function handleRequest(
     if (handled) return;
   }
 
-  // ── REST API routes ──────────────────────────────────────────────────────
+  // ── UCP/1.0 façade ────────────────────────────────────────────────────────
+  if (path.startsWith("/ucp/v1/")) {
+    if (!ucpDeps) {
+      sendJson(res, 503, { error: "UCP deps not registered." });
+      return;
+    }
+    const handled = await handleUcpRoute(path, req, res, ucpDeps);
+    if (handled) return;
+    send404(res);
+    return;
+  }
+
+  // ── Legacy REST API routes (NUPS/1.5, kept for backward compatibility) ──
   if (path.startsWith("/api/v1/") && path !== "/api/info") {
     if (!restHandlers) {
       sendJson(res, 503, { error: "REST handlers not registered." });

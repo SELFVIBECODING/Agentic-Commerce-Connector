@@ -1,18 +1,27 @@
 ---
-name: nexus-shopify-agent
-version: "0.1.0"
-description: Shopify commerce agent — search products, create checkout sessions, verify payments via HTTP API
+name: agentic-commerce-connector
+version: "0.2.0"
+description: UCP/1.0-native commerce agent — bridges AI agents to Shopify / WooCommerce / ... with NUPS stablecoin payment
 merchant_did: "did:nexus:20250407:nexus-demo-store-2"
-protocol: NUPS/1.5
-category: commerce.shopify
+protocol: UCP/1.0
+payment_protocol: NUPS/1.5
+category: commerce.universal
 currencies: [XSGD]
 chain_id: 20250407
 interface: http
 endpoints:
-  - GET /api/v1/products
-  - GET /api/v1/products/:handle
+  - GET  /ucp/v1/discovery
+  - POST /ucp/v1/search
+  - GET  /ucp/v1/products/:handle
+  - POST /ucp/v1/checkout-sessions
+  - GET  /ucp/v1/checkout-sessions/:id
+  - POST /ucp/v1/checkout-sessions/:id/complete
+  - GET  /ucp/v1/orders/:id
+legacy_endpoints:
+  - GET  /api/v1/products           # deprecated (will be removed)
+  - GET  /api/v1/products/:handle
   - POST /api/v1/checkout
-  - GET /api/v1/checkout/:sessionId
+  - GET  /api/v1/checkout/:sessionId
 ---
 
 # Nexus Shopify Agent — HTTP API

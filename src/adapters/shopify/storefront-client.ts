@@ -16,6 +16,7 @@ const PRODUCT_FIELDS = `
   title
   description
   handle
+  vendor
   images(first: 3) {
     edges { node { url altText } }
   }
@@ -24,6 +25,8 @@ const PRODUCT_FIELDS = `
       node {
         id
         title
+        sku
+        quantityAvailable
         price { amount currencyCode }
         availableForSale
         selectedOptions { name value }
@@ -66,6 +69,8 @@ query GetVariantPrices($ids: [ID!]!) {
     ... on ProductVariant {
       id
       title
+      sku
+      quantityAvailable
       price { amount currencyCode }
       availableForSale
       selectedOptions { name value }
@@ -110,6 +115,7 @@ interface RawProduct {
   readonly title: string;
   readonly description: string;
   readonly handle: string;
+  readonly vendor?: string | null;
   readonly images: {
     readonly edges: readonly GqlEdge<{
       readonly url: string;
@@ -132,6 +138,8 @@ interface RawProduct {
 interface RawVariant {
   readonly id: string;
   readonly title: string;
+  readonly sku?: string | null;
+  readonly quantityAvailable?: number | null;
   readonly price: { readonly amount: string; readonly currencyCode: string };
   readonly availableForSale: boolean;
   readonly selectedOptions: readonly {
@@ -150,6 +158,7 @@ function mapProduct(raw: RawProduct): CommerceProduct {
     title: raw.title,
     description: raw.description,
     handle: raw.handle,
+    brand: raw.vendor ?? null,
     images: raw.images.edges.map((e) => ({
       url: e.node.url,
       altText: e.node.altText,
@@ -169,6 +178,8 @@ function mapVariant(raw: RawVariant): CommerceVariant {
     price: raw.price,
     availableForSale: raw.availableForSale,
     selectedOptions: raw.selectedOptions,
+    sku: raw.sku ?? null,
+    inventoryQuantity: raw.quantityAvailable ?? null,
   };
 }
 

@@ -19,6 +19,8 @@ export interface CommerceVariant {
     readonly name: string;
     readonly value: string;
   }[];
+  readonly sku?: string | null;
+  readonly inventoryQuantity?: number | null;
 }
 
 export interface CommerceProduct {
@@ -32,6 +34,7 @@ export interface CommerceProduct {
     readonly min: { readonly amount: string; readonly currencyCode: string };
     readonly max: { readonly amount: string; readonly currencyCode: string };
   };
+  readonly brand?: string | null;
 }
 
 export interface ProductSearchResult {

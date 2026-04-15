@@ -1,29 +1,37 @@
 # Agentic Commerce Connector
 
-> Bridge AI agents to any e-commerce platform with stablecoin payments.
+> **UCP/1.0-native** middleware that bridges AI agents to any e-commerce platform, with stablecoin payments.
 
-Open-source middleware that connects AI agents (via MCP or HTTP) to e-commerce platforms through a universal adapter layer, with built-in stablecoin payment support.
+[![UCP Version](https://img.shields.io/badge/UCP-2026--04--08-brightgreen)](https://ucp.dev/specification/overview)
+[![License](https://img.shields.io/badge/license-MIT-blue)]()
+
+Open-source service that exposes the [Universal Commerce Protocol (UCP)](https://ucp.dev) to AI agents (via MCP or HTTP) and adapts it to any e-commerce platform through a pluggable adapter layer. Ships with Shopify + WooCommerce out of the box, and with Nexus Protocol stablecoin payments (USDC / XSGD via EIP-712 + escrow).
 
 ```
-Any AI Agent (MCP / HTTP)
-        |
-        v
-+-----------------------------+
-|  Agentic Commerce Connector |
-|                             |
-|  Commerce Adapters          |   Shopify / WooCommerce / OpenCart / ...
-|  Payment Provider           |   Nexus Protocol (EIP-712 + Escrow + USDC)
-|  Core Services              |   Checkout / Rate / Order / Reconciler
-+-----------------------------+
+  AI Agent (MCP / UCP-HTTP)
+         │
+         ▼  UCP/1.0 façade
+ ┌────────────────────────────┐
+ │  /ucp/v1/discovery         │
+ │  /ucp/v1/search            │
+ │  /ucp/v1/checkout-sessions │
+ │  /ucp/v1/orders            │
+ └──────────┬─────────────────┘
+            │
+  CatalogAdapter + MerchantAdapter   (platform-neutral)
+            │
+  PaymentProvider  ← NexusPaymentProvider (NUPS/1.5)
+            │
+  Shopify REST/GraphQL  ·  WooCommerce REST v3
 ```
 
 ## Features
 
-- **Multi-platform** — Shopify (Storefront + Admin GraphQL), WooCommerce (REST API), extensible to any platform
-- **Stablecoin payments** — USDC via Nexus Protocol (escrow + gasless checkout)
-- **Dual interface** — MCP tools for AI agents + HTTP REST API for direct integration
-- **Adapter pattern** — Add new e-commerce platforms by implementing two interfaces (`CatalogAdapter` + `MerchantAdapter`)
-- **Payment provider abstraction** — Nexus is the default; architecture supports additional providers
+- **UCP/1.0 native** — exposes the full Discovery / Search / Checkout / Order surface under `/ucp/v1/*`, schema-validated against the public spec.
+- **Multi-platform** — Shopify (Storefront + Admin GraphQL), WooCommerce (REST v3), extensible to any platform via two small interfaces.
+- **Stablecoin payments** — USDC / XSGD via Nexus Protocol (EIP-712 quote + on-chain escrow + gasless checkout). Advertised in UCP `discovery.payment_handlers`.
+- **Dual interface** — UCP-HTTP for native UCP agents + MCP tools for Claude / Cursor / Copilot.
+- **Stateless cart tokens** — HMAC-signed, 15-min TTL; no cookies, no session store needed for middle-tier.
 
 ## Quick Start
 
@@ -34,7 +42,8 @@ cd agentic-commerce-connector
 
 # Configure
 cp .env.example .env
-# Edit .env with your platform credentials and payment config
+# Set PLATFORM=shopify or PLATFORM=woocommerce and fill in credentials.
+# Generate a cart-token secret with: openssl rand -hex 32
 
 # Install & build
 npm install
@@ -44,103 +53,117 @@ npm run build
 npm start
 ```
 
-The service starts on port 10000 with both MCP and HTTP endpoints.
-
 ### Docker
 
 ```bash
 docker compose up -d
 ```
 
+The service starts on port 10000 with UCP, MCP, legacy REST, and webhook endpoints.
+
 ## Configuration
 
-Set `PLATFORM` to choose your e-commerce backend and `PAYMENT_PROVIDER` for the payment method.
+Set `PLATFORM` to choose the e-commerce backend; `PAYMENT_PROVIDER` stays at `nexus` for now.
 
 | Variable | Description | Default |
 |---|---|---|
-| `PLATFORM` | E-commerce platform (`shopify` or `woocommerce`) | `shopify` |
-| `PAYMENT_PROVIDER` | Payment protocol (`nexus`) | `nexus` |
+| `PLATFORM` | `shopify` or `woocommerce` | `shopify` |
+| `PAYMENT_PROVIDER` | `nexus` (more coming) | `nexus` |
 | `PORTAL_PORT` | HTTP server port | `10000` |
-| `MERCHANT_DID` | Merchant identity for payment provider | — |
+| `MERCHANT_DID` | Merchant identity | — |
+| `UCP_CART_TOKEN_SECRET` | 32+ char HMAC secret for cart tokens | — |
+| `UCP_TOKEN_TTL_SECONDS` | Cart token lifetime | `900` |
 
-See [.env.example](.env.example) for the full list.
+See [.env.example](.env.example) for the full list including `SHOPIFY_*`, `WOO_*`, and `MERCHANT_SIGNER_PRIVATE_KEY`.
 
 ## API
 
-### MCP Tools
-
-| Tool | Description |
-|---|---|
-| `search_products` | Search products by keyword |
-| `get_product` | Get product details by handle |
-| `create_checkout` | Create a checkout session with line items |
-| `check_checkout_status` | Check payment and order status |
-
-### HTTP Endpoints
+### UCP/1.0 endpoints (primary)
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/v1/products?q=...` | Search products |
-| `GET` | `/api/v1/products/:handle` | Product details |
-| `POST` | `/api/v1/checkout` | Create checkout session |
-| `GET` | `/api/v1/checkout/:sessionId` | Checkout status |
-| `POST` | `/webhook` | Payment event callback |
-| `GET` | `/health` | Health check |
+| GET | `/ucp/v1/discovery` | Capabilities, store meta, payment handlers |
+| POST | `/ucp/v1/search` | Product search (structured query) |
+| GET | `/ucp/v1/products/:handle` | Product detail |
+| POST | `/ucp/v1/checkout-sessions` | Create session, returns `cart_token` |
+| GET | `/ucp/v1/checkout-sessions/:id` | Retrieve session (Bearer: cart_token) |
+| POST | `/ucp/v1/checkout-sessions/:id/complete` | Finalize, returns `continue_url` |
+| GET | `/ucp/v1/orders/:id` | Order status / attribution |
+
+Authenticate session-scoped calls with the `cart_token` returned by create:
+
+```
+Authorization: Bearer <cart_token>
+# or
+X-UCP-Cart-Token: <cart_token>
+```
+
+See [docs/ucp-compliance.md](docs/ucp-compliance.md) for the full compliance matrix.
+
+### MCP tools
+
+`search_products` · `get_product` · `create_checkout` · `check_checkout_status` — all backed by the same UCP handlers.
+
+### Legacy REST (deprecated)
+
+`/api/v1/*` routes are retained for backwards compatibility and will be removed in `v1.0.0`.
 
 ## Adding a New E-commerce Adapter
 
 Implement two interfaces in `src/adapters/<platform>/`:
 
 ```typescript
-// CatalogAdapter — read product data
 interface CatalogAdapter {
-  searchProducts(query: string, first?: number, after?: string | null): Promise<ProductSearchResult>
-  listProducts(first?: number, after?: string | null): Promise<ProductSearchResult>
-  getProduct(handle: string): Promise<CommerceProduct | null>
-  getVariantPrices(variantIds: readonly string[]): Promise<readonly CommerceVariant[]>
+  searchProducts(query, first?, after?): Promise<ProductSearchResult>
+  listProducts(first?, after?): Promise<ProductSearchResult>
+  getProduct(handle): Promise<CommerceProduct | null>
+  getVariantPrices(variantIds): Promise<readonly CommerceVariant[]>
   getStoreMeta(): Promise<StoreMeta>
 }
 
-// MerchantAdapter — manage orders
 interface MerchantAdapter {
-  createOrder(session: CheckoutSession, opts?: OrderCreateOpts): Promise<OrderCreateResult>
-  markOrderPaid(platformOrderId: string, txHash: string): Promise<void>
-  cancelOrder(platformOrderId: string, reason?: string): Promise<void>
-  hasExistingOrder(sessionId: string): Promise<boolean>
+  createOrder(session, opts?): Promise<OrderCreateResult>
+  markOrderPaid(platformOrderId, txHash): Promise<void>
+  cancelOrder(platformOrderId, reason?): Promise<void>
+  hasExistingOrder(sessionId): Promise<boolean>
 }
 ```
 
-Then register your adapter factory in `src/config.ts`.
+Wire the factory into [src/server.ts](src/server.ts) `createAdaptersForConfig`. The UCP façade automatically maps your adapter data to the UCP wire format via [src/ucp/mappers.ts](src/ucp/mappers.ts).
 
 ## Adding a New Payment Provider
 
-Implement the `PaymentProvider` interface in `src/payment/<provider>/`:
+Implement `PaymentProvider` in `src/payment/<provider>/`:
 
 ```typescript
 interface PaymentProvider {
-  buildQuote(params: QuoteParams): Promise<PaymentQuote>
-  submitToPaymentNetwork(quote: PaymentQuote): Promise<{ checkoutUrl: string; paymentGroupId: string }>
-  confirmFulfillment(paymentId: string): Promise<void>
-  verifyWebhook(rawBody: string, signature: string, timestamp: string): boolean
+  buildQuote(params): Promise<PaymentQuote>
+  submitToPaymentNetwork(quote): Promise<{ checkoutUrl, paymentGroupId }>
+  confirmFulfillment(paymentId): Promise<void>
+  verifyWebhook(rawBody, signature, timestamp): VerifyResult
 }
 ```
+
+Providers also expose a `describe()` returning a UCP `payment_handler` descriptor; the façade advertises it in `/ucp/v1/discovery`.
 
 ## Architecture
 
 ```
 src/
-  adapters/           # E-commerce platform adapters
+  ucp/                # UCP/1.0 façade (types, mappers, routes, cart tokens)
+  adapters/
     shopify/          #   Shopify Storefront + Admin GraphQL
-    woocommerce/      #   WooCommerce REST API
-  payment/            # Payment provider implementations
-    nexus/            #   Nexus Protocol (EIP-712 + escrow)
+    woocommerce/      #   WooCommerce REST v3
+  payment/
+    types.ts          # PaymentProvider interface
+    nexus/            #   Nexus Protocol (EIP-712 + escrow + NUPS/1.5)
   services/           # Platform-agnostic core logic
-    checkout-session  #   Checkout state machine
-    rate-service      #   Fiat-to-stablecoin conversion
-    order-store       #   Order state management
-    order-writeback   #   Post-payment order sync
-    reconciler        #   Periodic reconciliation
 ```
+
+## Acknowledgments
+
+- [Universal Commerce Protocol (UCP)](https://github.com/Universal-Commerce-Protocol/ucp) — the open protocol we implement
+- [ucp-connect-woocommerce](https://github.com/joellobo1234/ucp-connect-woocommerce) — reference plugin for endpoint shape
 
 ## License
 

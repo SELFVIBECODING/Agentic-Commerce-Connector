@@ -71,8 +71,6 @@ export type {
 // Order types
 // ---------------------------------------------------------------------------
 
-import type { PaymentQuote } from "./payment/types.js";
-
 export type OrderStatus = "UNPAID" | "PAID" | "EXPIRED" | "CANCELLED";
 
 export interface Order {

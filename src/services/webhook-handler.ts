@@ -166,7 +166,7 @@ export async function handleWebhookEvent(
         // Fire-and-forget settlement
         requestSettlement(
           webhookConfig.nexusCoreUrl,
-          data.nexus_payment_id,
+          data.payment_id,
           webhookConfig.merchantDid,
         ).catch((err) =>
           console.error("[Webhook] Settlement request failed:", err),

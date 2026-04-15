@@ -11,7 +11,14 @@ import {
   registerMcpHandler,
   registerRestHandlers,
   registerWebhookHandler,
+  registerUcpDeps,
 } from "./portal.js";
+import { loadCartTokenConfig } from "./ucp/cart-token.js";
+import type { UcpPaymentHandlerT } from "./ucp/types.js";
+import {
+  createNexusPaymentProvider,
+  loadNexusPaymentConfig,
+} from "./payment/nexus/index.js";
 import {
   verifyWebhookSignature,
   handleWebhookEvent,
@@ -29,6 +36,10 @@ import {
   validateShopifyConfig,
 } from "./adapters/shopify/index.js";
 import type { ProductCache } from "./adapters/shopify/product-cache.js";
+import {
+  createWooCommerceAdapters,
+  validateWooConfig,
+} from "./adapters/woocommerce/index.js";
 import type { CommerceProduct, StoreMeta, WebhookPayload } from "./types.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
@@ -55,9 +66,21 @@ function createAdaptersForConfig(config: Config): Adapters {
       const { catalog, merchant } = createShopifyAdapters(shopifyConfig);
       return { catalog, merchant, productCache: createProductCache() };
     }
+    case "woocommerce": {
+      const wooConfig = validateWooConfig({
+        WOO_BASE_URL: config.wooBaseUrl,
+        WOO_CONSUMER_KEY: config.wooConsumerKey,
+        WOO_CONSUMER_SECRET: config.wooConsumerSecret,
+        WOO_API_VERSION: process.env.WOO_API_VERSION,
+        WOO_REQUEST_TIMEOUT_MS: process.env.WOO_REQUEST_TIMEOUT_MS,
+        WOO_MAX_RETRIES: process.env.WOO_MAX_RETRIES,
+      });
+      const { catalog, merchant } = createWooCommerceAdapters(wooConfig);
+      return { catalog, merchant, productCache: createProductCache() };
+    }
     default:
       throw new Error(
-        `Adapter not yet implemented for platform: ${config.platform}`,
+        `Adapter not yet implemented for platform: ${(config as { platform: string }).platform}`,
       );
   }
 }
@@ -605,11 +628,34 @@ async function startHttpMode(): Promise<void> {
     },
   );
 
+  // Register UCP/1.0 façade
+  const cartTokenConfig = loadCartTokenConfig(process.env);
+  const selfUrl = config.selfUrl || `http://localhost:${config.portalPort}`;
+
+  // Payment provider (NUPS/1.5 Nexus) — surfaces itself to UCP discovery
+  const nexusPaymentConfig = loadNexusPaymentConfig(process.env);
+  const paymentProvider = createNexusPaymentProvider(
+    nexusPaymentConfig,
+    config.merchantDid,
+  );
+  const paymentHandlers: UcpPaymentHandlerT[] = [paymentProvider.describe()];
+  registerUcpDeps({
+    config,
+    catalog,
+    merchant,
+    cartTokenConfig,
+    paymentHandlers,
+    ucpEndpoint: `${selfUrl}/ucp/v1`,
+  });
+
   startPortal(config);
   console.error(
     `Commerce Agent started (HTTP, platform=${config.platform}, port ${config.portalPort})`,
   );
-  console.error(`  API:   http://localhost:${config.portalPort}/api/v1/`);
+  console.error(`  UCP:   http://localhost:${config.portalPort}/ucp/v1/`);
+  console.error(
+    `  API:   http://localhost:${config.portalPort}/api/v1/ (legacy)`,
+  );
   console.error(`  MCP:   http://localhost:${config.portalPort}/mcp`);
   console.error(`  Skill: http://localhost:${config.portalPort}/skill.md`);
 

@@ -1,0 +1,7 @@
+{
+  "ucp_version": "2026-04-08",
+  "spec_source": "https://ucp.dev/specification/overview",
+  "spec_repo": "https://github.com/Universal-Commerce-Protocol/ucp",
+  "pinned_at": "2026-04-15",
+  "notes": "Capability-based envelope. See docs/ucp-compliance.md for supported vs unsupported surfaces."
+}
