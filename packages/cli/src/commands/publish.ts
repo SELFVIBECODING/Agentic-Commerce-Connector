@@ -1,9 +1,12 @@
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { resolve } from "node:path";
 import { privateKeyToAccount } from "viem/accounts";
 import type { Hex } from "viem";
 import {
   buildMarketplaceSubmissionTypedData,
+  computeSkillSha256,
+  parseSkillMd,
   type MarketplaceSubmission,
 } from "@acc/skill-spec";
 
@@ -24,61 +27,25 @@ function positional(args: readonly string[]): string | undefined {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Validation                                                        */
-/* ------------------------------------------------------------------ */
-
-interface SubmissionDescriptor {
-  readonly skill_id: string;
-  readonly skill_url: string;
-  readonly health_url: string;
-  readonly name: string;
-  readonly description?: string;
-  readonly categories: readonly string[];
-  readonly tags?: readonly string[];
-  readonly logo_url?: string;
-  readonly website_url?: string;
-  readonly supported_platforms?: readonly string[];
-  readonly supported_payments?: readonly string[];
-  readonly languages?: readonly string[];
-  readonly countries_served?: readonly string[];
-  readonly contact_url?: string;
-}
-
-const REQUIRED_FIELDS: readonly (keyof SubmissionDescriptor)[] = [
-  "skill_id",
-  "skill_url",
-  "health_url",
-  "name",
-  "categories",
-];
-
-function validateDescriptor(raw: unknown): SubmissionDescriptor {
-  if (typeof raw !== "object" || raw === null) {
-    throw new Error("Submission descriptor must be a JSON object.");
-  }
-  const obj = raw as Record<string, unknown>;
-  for (const field of REQUIRED_FIELDS) {
-    if (obj[field] === undefined || obj[field] === null) {
-      throw new Error(`Missing required field "${field}" in submission descriptor.`);
-    }
-  }
-  if (!Array.isArray(obj["categories"]) || obj["categories"].length === 0) {
-    throw new Error('"categories" must be a non-empty array of strings.');
-  }
-  return raw as unknown as SubmissionDescriptor;
-}
-
-/* ------------------------------------------------------------------ */
 /*  Main                                                              */
 /* ------------------------------------------------------------------ */
 
 export async function runPublish(args: string[]): Promise<void> {
-  /* --- Parse CLI args --- */
   const filePath = positional(args);
   if (!filePath) {
     throw new Error(
-      "Usage: acc-skill publish <descriptor.json> --registry=<url> --private-key=<hex>",
+      "Usage: acc-skill publish <acc-skill.md> --url=<hosted-url> --registry=<url> --private-key=<hex>",
     );
+  }
+
+  const hostedUrl = parseFlag(args, "url");
+  if (!hostedUrl) {
+    throw new Error(
+      "Missing required flag --url=<public https URL where the file is hosted>",
+    );
+  }
+  if (!/^https:\/\//.test(hostedUrl)) {
+    throw new Error("--url must be an https:// URL.");
   }
 
   const registry = parseFlag(args, "registry");
@@ -91,42 +58,26 @@ export async function runPublish(args: string[]): Promise<void> {
     throw new Error("Missing required flag --private-key=<hex>.");
   }
 
-  /* --- Read & validate descriptor file --- */
-  const raw: unknown = JSON.parse(readFileSync(filePath, "utf-8"));
-  const descriptor = validateDescriptor(raw);
+  // Read, validate, hash the skill markdown
+  const absPath = resolve(filePath);
+  const raw = readFileSync(absPath, "utf-8");
+  const parsed = parseSkillMd(raw); // throws on invalid frontmatter
+  const skillSha256 = computeSkillSha256(raw);
 
-  /* --- Derive wallet address from private key --- */
+  // Derive wallet from private key
   const account = privateKeyToAccount(privateKeyHex as Hex);
 
-  /* --- Build MarketplaceSubmission --- */
+  // Build EIP-712 submission
   const submission: MarketplaceSubmission = {
     action: "publish",
     wallet: account.address,
-    skill_id: descriptor.skill_id,
-    skill_url: descriptor.skill_url,
-    health_url: descriptor.health_url,
-    name: descriptor.name,
-    description: descriptor.description,
-    categories: [...descriptor.categories],
-    tags: descriptor.tags ? [...descriptor.tags] : undefined,
-    logo_url: descriptor.logo_url,
-    website_url: descriptor.website_url,
-    supported_platforms: descriptor.supported_platforms
-      ? [...descriptor.supported_platforms]
-      : undefined,
-    supported_payments: descriptor.supported_payments
-      ? [...descriptor.supported_payments]
-      : undefined,
-    languages: descriptor.languages ? [...descriptor.languages] : undefined,
-    countries_served: descriptor.countries_served
-      ? [...descriptor.countries_served]
-      : undefined,
-    contact_url: descriptor.contact_url,
+    skill_id: parsed.frontmatter.skill_id,
+    skill_url: hostedUrl,
+    skill_sha256: skillSha256,
     nonce: randomUUID(),
     submitted_at: Date.now(),
   };
 
-  /* --- EIP-712 sign --- */
   const chainId = Number(process.env.EIP712_CHAIN_ID ?? 1);
   const typedData = buildMarketplaceSubmissionTypedData(submission, chainId);
 
@@ -137,30 +88,32 @@ export async function runPublish(args: string[]): Promise<void> {
     message: typedData.message,
   });
 
-  /* --- POST to registry --- */
-  const url = `${registry.replace(/\/+$/, "")}/v1/submissions`;
-  const response = await fetch(url, {
+  // POST to registry
+  const endpoint = `${registry.replace(/\/+$/, "")}/v1/submissions`;
+  const response = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ payload: submission, signature }),
   });
 
   const body: unknown = await response.json();
+  const envelope = body as {
+    readonly ok?: boolean;
+    readonly data?: unknown;
+    readonly error?: { readonly code?: string; readonly message?: string };
+  };
 
-  if (
-    typeof body === "object" &&
-    body !== null &&
-    (body as Record<string, unknown>).ok === true
-  ) {
-    const id = (body as Record<string, unknown>).id ?? "(unknown)";
+  if (envelope.ok) {
     process.stdout.write(
-      `Published "${submission.name}" (${submission.skill_id}) — submission id: ${String(id)}\n`,
+      `Published "${parsed.frontmatter.name}" (${parsed.frontmatter.skill_id})\n` +
+        `  url:    ${hostedUrl}\n` +
+        `  sha256: ${skillSha256}\n` +
+        `  wallet: ${account.address}\n`,
     );
-  } else {
-    const message =
-      typeof body === "object" && body !== null
-        ? (body as Record<string, unknown>).error ?? JSON.stringify(body)
-        : String(body);
-    throw new Error(`Registry rejected submission: ${String(message)}`);
+    return;
   }
+
+  const code = envelope.error?.code ?? `HTTP_${response.status}`;
+  const message = envelope.error?.message ?? JSON.stringify(body);
+  throw new Error(`Registry rejected submission [${code}]: ${message}`);
 }

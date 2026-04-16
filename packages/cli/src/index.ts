@@ -14,7 +14,12 @@ const COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
 };
 
 async function main(): Promise<void> {
-  if (!command || command === "help" || command === "--help" || command === "-h") {
+  if (
+    !command ||
+    command === "help" ||
+    command === "--help" ||
+    command === "-h"
+  ) {
     printHelp();
     return;
   }
@@ -28,20 +33,24 @@ async function main(): Promise<void> {
 }
 
 function printHelp(): void {
-  console.log(`acc-skill — generate, sign, publish, and verify ACC skill packages
+  process.stdout
+    .write(`acc-skill — scaffold, publish, and verify ACC merchant skill markdown
 
 Usage:
-  acc-skill init [--from <connector-url>] [--out <dir>]
-      Interactively build a skill package from a connector's /skill/export.
+  acc-skill init [--out=./acc-skill.md] [--force]
+      Write a skill.md template with frontmatter + placeholder body.
 
-  acc-skill sign --in <dir> --key <private-key> --chain-id <id>
-      EIP-712 sign the manifest; writes signature.json.
+  acc-skill verify <acc-skill.md>
+      Parse + validate the frontmatter, print the canonical sha256.
 
-  acc-skill publish --in <dir> --marketplace <url>
-      POST the signed package to a marketplace.
-
-  acc-skill verify --in <dir> [--chain-id <id>]
-      Validate schemas, content_hash, and signature locally.
+  acc-skill publish <acc-skill.md> \\
+      --url=<hosted-https-url> \\
+      --registry=<marketplace-url> \\
+      --private-key=<0x...>
+      Hash the local file, build an EIP-712 MarketplaceSubmission,
+      sign it with --private-key, and POST to <registry>/v1/submissions.
+      The marketplace will fetch --url, recompute the hash, and reject
+      anything that does not match.
 `);
 }
 

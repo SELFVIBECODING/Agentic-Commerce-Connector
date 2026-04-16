@@ -23,6 +23,10 @@
     "test": "vitest"
   },
   "dependencies": {
+    "js-yaml": "^4.1.0",
     "viem": "^2.46.3"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9"
   }
 }

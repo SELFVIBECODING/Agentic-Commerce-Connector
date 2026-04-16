@@ -2,26 +2,27 @@ import type { Address, Hex } from "viem";
 import { recoverTypedDataAddress } from "viem";
 import { EIP712_DOMAIN_NAME, EIP712_DOMAIN_VERSION } from "./constants.js";
 
+/**
+ * EIP-712 payload a merchant signs to add/remove a listing on a marketplace.
+ *
+ * The signature binds the signer wallet to *this specific skill.md content*
+ * at *this specific URL*. The content hash is the sha256 of the normalized
+ * markdown bytes (see skill-md.ts for normalization rules).
+ *
+ * For takedown, skill_url may be empty and skill_sha256 may be the zero hash.
+ */
 export interface MarketplaceSubmission {
-  action: "publish" | "takedown";
-  wallet: Address;
-  skill_id: string;
-  skill_url: string;
-  health_url: string;
-  name: string;
-  description?: string;
-  categories: string[];
-  tags?: string[];
-  logo_url?: string;
-  website_url?: string;
-  supported_platforms?: string[];
-  supported_payments?: string[];
-  languages?: string[];
-  countries_served?: string[];
-  contact_url?: string;
-  nonce: string;
-  submitted_at: number; // unix ms
+  readonly action: "publish" | "takedown";
+  readonly wallet: Address;
+  readonly skill_id: string;
+  readonly skill_url: string;
+  readonly skill_sha256: Hex; // 0x<64 hex chars>
+  readonly nonce: string;
+  readonly submitted_at: number; // unix ms
 }
+
+export const ZERO_SHA256: Hex =
+  "0x0000000000000000000000000000000000000000000000000000000000000000";
 
 export const MARKETPLACE_EIP712_TYPES = {
   MarketplaceSubmission: [
@@ -29,26 +30,11 @@ export const MARKETPLACE_EIP712_TYPES = {
     { name: "wallet", type: "address" },
     { name: "skill_id", type: "string" },
     { name: "skill_url", type: "string" },
-    { name: "health_url", type: "string" },
-    { name: "name", type: "string" },
-    { name: "description", type: "string" },
-    { name: "categories", type: "string" },
-    { name: "tags", type: "string" },
-    { name: "logo_url", type: "string" },
-    { name: "website_url", type: "string" },
-    { name: "supported_platforms", type: "string" },
-    { name: "supported_payments", type: "string" },
-    { name: "languages", type: "string" },
-    { name: "countries_served", type: "string" },
-    { name: "contact_url", type: "string" },
+    { name: "skill_sha256", type: "bytes32" },
     { name: "nonce", type: "string" },
     { name: "submitted_at", type: "uint256" },
   ],
 } as const;
-
-function serializeArrayField(arr?: string[]): string {
-  return (arr ?? []).join(",");
-}
 
 export function buildMarketplaceSubmissionTypedData(
   submission: MarketplaceSubmission,
@@ -67,18 +53,7 @@ export function buildMarketplaceSubmissionTypedData(
       wallet: submission.wallet,
       skill_id: submission.skill_id,
       skill_url: submission.skill_url,
-      health_url: submission.health_url,
-      name: submission.name,
-      description: submission.description ?? "",
-      categories: serializeArrayField(submission.categories),
-      tags: serializeArrayField(submission.tags),
-      logo_url: submission.logo_url ?? "",
-      website_url: submission.website_url ?? "",
-      supported_platforms: serializeArrayField(submission.supported_platforms),
-      supported_payments: serializeArrayField(submission.supported_payments),
-      languages: serializeArrayField(submission.languages),
-      countries_served: serializeArrayField(submission.countries_served),
-      contact_url: submission.contact_url ?? "",
+      skill_sha256: submission.skill_sha256,
       nonce: submission.nonce,
       submitted_at: BigInt(submission.submitted_at),
     },
