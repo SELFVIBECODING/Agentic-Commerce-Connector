@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { runInit } from "./commands/init.js";
+import { runInit } from "./commands/skill/init.js";
 import { runSign } from "./commands/sign.js";
 import { runPublish } from "./commands/publish.js";
 import { runVerify } from "./commands/verify.js";
@@ -14,6 +14,10 @@ const COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
 };
 
 async function main(): Promise<void> {
+  process.stderr.write(
+    "note: `acc-skill` is deprecated — use `acc` (run `acc help`). Will be removed in a future release.\n",
+  );
+
   if (
     !command ||
     command === "help" ||
@@ -25,7 +29,7 @@ async function main(): Promise<void> {
   }
   const handler = COMMANDS[command];
   if (!handler) {
-    console.error(`acc-skill: unknown command "${command}"`);
+    process.stderr.write(`acc-skill: unknown command "${command}"\n`);
     printHelp();
     process.exit(2);
   }
@@ -35,6 +39,7 @@ async function main(): Promise<void> {
 function printHelp(): void {
   process.stdout
     .write(`acc-skill — scaffold, publish, and verify ACC merchant skill markdown
+(deprecated; prefer 'acc' for new workflows)
 
 Usage:
   acc-skill init [--out=./acc-skill.md] [--force]
@@ -55,6 +60,6 @@ Usage:
 }
 
 main().catch((err) => {
-  console.error(err instanceof Error ? err.message : err);
+  process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
   process.exit(1);
 });

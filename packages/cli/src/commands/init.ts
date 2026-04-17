@@ -1,82 +1,202 @@
-import { writeFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
-import { buildSkillMd, type SkillFrontmatter } from "@acc/skill-spec";
+// ---------------------------------------------------------------------------
+// `acc init` — 8-step interactive wizard.
+//
+// Steps live in src/shared/steps/ so this file stays a thin orchestrator.
+// See docs/plans/2026-04-16-phase-8-cli-wizard-structure.md §E for the
+// step-by-step intent.
+// ---------------------------------------------------------------------------
 
-/* ------------------------------------------------------------------ */
-/*  Arg helpers                                                       */
-/* ------------------------------------------------------------------ */
+import { ensureDataDir, type DataDirLayout } from "../shared/data-dir.js";
+import {
+  createPrompter,
+  defaultPromptIO,
+  type Prompter,
+  type PromptIO,
+} from "../shared/prompts.js";
+import {
+  loadConfig,
+  saveConfig,
+  backupConfig,
+  type AccConfig,
+} from "../shared/config-store.js";
+import { stepPreflight } from "../shared/steps/step1-preflight.js";
+import { stepDataDir } from "../shared/steps/step2-data-dir.js";
+import { stepSelfUrl } from "../shared/steps/step3-self-url.js";
+import { stepEncKey } from "../shared/steps/step4-enc-key.js";
+import { stepSigner } from "../shared/steps/step5-signer.js";
+import { stepShopify } from "../shared/steps/step6-shopify.js";
+import { stepSqlite } from "../shared/steps/step7-sqlite.js";
+import { stepSkill } from "../shared/steps/step8-skill.js";
+import type {
+  StepContext,
+  NonInteractiveSeed,
+} from "../shared/steps/context.js";
 
-function parseFlag(args: readonly string[], name: string): string | undefined {
-  const prefix = `--${name}=`;
-  for (const arg of args) {
-    if (arg.startsWith(prefix)) return arg.slice(prefix.length);
-  }
-  return undefined;
+export interface RunInitOptions {
+  /** Inject a custom PromptIO (tests). Defaults to readline-backed stdin/stdout. */
+  readonly io?: PromptIO;
+  /** Seed for non-interactive mode. Supplied via env or tests. */
+  readonly seed?: Partial<NonInteractiveSeed>;
 }
 
-function hasFlag(args: readonly string[], name: string): boolean {
-  return args.includes(`--${name}`);
-}
+const DEFAULT_REGISTRY = "https://api.siliconretail.com";
+const DEFAULT_CHAIN_ID = 1;
 
-/* ------------------------------------------------------------------ */
-/*  Template                                                          */
-/* ------------------------------------------------------------------ */
+export async function runInit(
+  args: string[],
+  opts: RunInitOptions = {},
+): Promise<void> {
+  const flags = parseFlags(args);
+  const force = flags.has("force");
+  const dataDirArg = flags.get("data-dir") ?? "./acc-data";
 
-const TEMPLATE_FRONTMATTER: SkillFrontmatter = {
-  name: "My Store",
-  description:
-    "Short one-line pitch for the marketplace listing (<= 280 chars).",
-  skill_id: "my-store-v1",
-  categories: ["digital"],
-  supported_platforms: ["custom"],
-  supported_payments: ["stripe"],
-  health_url: "https://store.example.com/health",
-  tags: ["placeholder"],
-  website_url: "https://store.example.com",
-};
+  const io = opts.io ?? defaultPromptIO();
+  const prompter = createPrompter(io);
+  const seed = opts.seed ?? nonInteractiveSeedFromEnv();
 
-const TEMPLATE_BODY = `# My Store
+  try {
+    const layout = ensureDataDir(dataDirArg);
+    const existing = loadConfig(layout.configPath);
 
-Describe in freeform markdown what this merchant offers to AI agents:
-
-- What the skill exposes (catalog browse, checkout, order status, …)
-- Supported platforms / payment handlers
-- Contact or support info
-
-Edit the YAML frontmatter above and the body below, then host this file
-somewhere publicly reachable over HTTPS and publish it:
-
-    acc-skill publish ./acc-skill.md \\
-      --url=https://store.example.com/.well-known/acc-skill.md \\
-      --registry=https://api.siliconretail.com \\
-      --private-key=0x...
-
-The marketplace will fetch the URL, verify the content hash against the
-EIP-712 signature, and index the frontmatter fields above.
-`;
-
-/* ------------------------------------------------------------------ */
-/*  Main                                                              */
-/* ------------------------------------------------------------------ */
-
-export async function runInit(args: string[]): Promise<void> {
-  const outPath = resolve(parseFlag(args, "out") ?? "./acc-skill.md");
-  const force = hasFlag(args, "force");
-
-  if (existsSync(outPath) && !force) {
-    throw new Error(
-      `Refusing to overwrite ${outPath}. Pass --force to replace it.`,
+    const action = await resolveReentrantAction(
+      layout,
+      existing,
+      prompter,
+      force,
     );
+    if (action === "cancel" || action === "keep") {
+      process.stdout.write(`\nNo changes written. (action=${action})\n`);
+      return;
+    }
+    if (action === "reset") {
+      const backup = backupConfig(layout.configPath);
+      if (backup) process.stdout.write(`Backed up old config to ${backup}\n`);
+    }
+
+    const ctx: StepContext = {
+      layout,
+      prompter,
+      flags,
+      force,
+      config: existing
+        ? { ...existing }
+        : {
+            dataVersion: 1,
+            registry: seed?.registry ?? DEFAULT_REGISTRY,
+            chainId: seed?.chainId ?? DEFAULT_CHAIN_ID,
+            skillMdPath: layout.skillMd,
+          },
+      seed,
+    };
+
+    const steps: Array<
+      readonly [string, (c: StepContext) => Promise<{ summary: string }>]
+    > =
+      action === "shopify-only"
+        ? [["6/8 Shopify Partners creds", stepShopify]]
+        : [
+            ["1/8 Preflight", stepPreflight],
+            ["2/8 Data directory", stepDataDir],
+            ["3/8 Public URL", stepSelfUrl],
+            ["4/8 Encryption key", stepEncKey],
+            ["5/8 Marketplace signer", stepSigner],
+            ["6/8 Shopify Partners creds", stepShopify],
+            ["7/8 SQLite migration", stepSqlite],
+            ["8/8 Skill template", stepSkill],
+          ];
+
+    for (const [label, step] of steps) {
+      process.stdout.write(`\n${label}\n`);
+      const out = await step(ctx);
+      process.stdout.write(`  → ${out.summary}\n`);
+    }
+
+    const final = finaliseConfig(ctx.config, layout);
+    saveConfig(layout.configPath, final);
+
+    printFinaleSummary(final, layout);
+  } finally {
+    prompter.close();
   }
+}
 
-  const content = buildSkillMd(TEMPLATE_FRONTMATTER, TEMPLATE_BODY);
-  writeFileSync(outPath, content, "utf-8");
+/* -------------------------------------------------------------------------- */
+/*  Helpers                                                                    */
+/* -------------------------------------------------------------------------- */
 
-  process.stdout.write(
-    `Wrote skill template to ${outPath}\n` +
-      `Next:\n` +
-      `  1. Edit the frontmatter and body\n` +
-      `  2. Host the file at an https:// URL\n` +
-      `  3. acc-skill publish ${outPath} --url=<hosted-url> --registry=<url> --private-key=0x...\n`,
+function parseFlags(args: readonly string[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const arg of args) {
+    if (!arg.startsWith("--")) continue;
+    const [k, v] = arg.slice(2).split("=", 2);
+    if (!k) continue;
+    map.set(k, v ?? "true");
+  }
+  return map;
+}
+
+async function resolveReentrantAction(
+  layout: DataDirLayout,
+  existing: AccConfig | null,
+  prompter: Prompter,
+  force: boolean,
+): Promise<"fresh" | "reset" | "shopify-only" | "keep" | "cancel"> {
+  if (!existing) return "fresh";
+  if (force) return "reset";
+  const choice = await prompter.askChoice(
+    `Found existing config at ${layout.configPath}. What next?`,
+    [
+      { key: "a", label: "keep as-is (exit)" },
+      { key: "b", label: "update Shopify credentials only" },
+      { key: "c", label: "start over (backs up current)" },
+      { key: "d", label: "cancel" },
+    ],
   );
+  return (
+    {
+      a: "keep" as const,
+      b: "shopify-only" as const,
+      c: "reset" as const,
+      d: "cancel" as const,
+    }[choice] ?? "cancel"
+  );
+}
+
+function finaliseConfig(
+  partial: Partial<AccConfig>,
+  layout: DataDirLayout,
+): AccConfig {
+  const base: AccConfig = {
+    dataVersion: 1,
+    registry: partial.registry ?? DEFAULT_REGISTRY,
+    chainId: partial.chainId ?? DEFAULT_CHAIN_ID,
+    selfUrl: partial.selfUrl ?? "https://acc.example.com",
+    skillMdPath: partial.skillMdPath ?? layout.skillMd,
+  };
+  if (partial.wallet) {
+    return { ...base, wallet: partial.wallet };
+  }
+  return base;
+}
+
+function printFinaleSummary(cfg: AccConfig, layout: DataDirLayout): void {
+  process.stdout.write(
+    `\n✓ acc init complete\n` +
+      `  data dir : ${layout.root}\n` +
+      `  registry : ${cfg.registry}\n` +
+      `  selfUrl  : ${cfg.selfUrl}\n` +
+      `  wallet   : ${cfg.wallet?.address ?? "(not configured)"}\n` +
+      `  skill    : ${cfg.skillMdPath}\n` +
+      `\nNext: npm --workspace packages/connector start\n`,
+  );
+}
+
+function nonInteractiveSeedFromEnv(): Partial<NonInteractiveSeed> | undefined {
+  const raw = process.env.ACC_INIT_CONFIG;
+  if (!raw) return undefined;
+  try {
+    return JSON.parse(raw) as Partial<NonInteractiveSeed>;
+  } catch {
+    throw new Error("ACC_INIT_CONFIG is set but contains invalid JSON");
+  }
 }

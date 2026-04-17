@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { privateKeyToAccount } from "viem/accounts";
@@ -9,6 +9,14 @@ import {
   parseSkillMd,
   type MarketplaceSubmission,
 } from "@acc/skill-spec";
+import { resolveDataDir } from "../shared/data-dir.js";
+import { loadConfig } from "../shared/config-store.js";
+import { isWrappedSigner, decryptSignerKey } from "../shared/keys.js";
+import {
+  createPrompter,
+  defaultPromptIO,
+  type PromptIO,
+} from "../shared/prompts.js";
 
 /* ------------------------------------------------------------------ */
 /*  Arg helpers                                                       */
@@ -30,36 +38,62 @@ function positional(args: readonly string[]): string | undefined {
 /*  Main                                                              */
 /* ------------------------------------------------------------------ */
 
-export async function runPublish(args: string[]): Promise<void> {
-  const filePath = positional(args);
+export interface PublishOptions {
+  /** Allows tests to inject a PromptIO for signer passphrase entry. */
+  readonly io?: PromptIO;
+}
+
+export async function runPublish(
+  args: string[],
+  opts: PublishOptions = {},
+): Promise<void> {
+  const dataDirFlag = parseFlag(args, "data-dir");
+  const layout = resolveDataDir(dataDirFlag ?? "./acc-data");
+  const cfg = loadConfig(layout.configPath);
+
+  const filePath = positional(args) ?? cfg?.skillMdPath;
   if (!filePath) {
     throw new Error(
-      "Usage: acc-skill publish <acc-skill.md> --url=<hosted-url> --registry=<url> --private-key=<hex>",
+      "Usage: acc publish [FILE] [--url=URL] [--registry=URL] [--private-key=HEX]\n" +
+        "Zero-arg mode requires a complete acc-data/config.json — run 'acc init' first.",
     );
   }
 
-  const hostedUrl = parseFlag(args, "url");
-  if (!hostedUrl) {
+  const hostedUrl =
+    (parseFlag(args, "url") ?? cfg?.selfUrl)
+      ? stripTrailing((parseFlag(args, "url") ?? cfg?.selfUrl)!) +
+        "/.well-known/acc-skill.md"
+      : undefined;
+  const explicitUrl = parseFlag(args, "url");
+  const resolvedUrl = explicitUrl ?? hostedUrl;
+  if (!resolvedUrl) {
     throw new Error(
-      "Missing required flag --url=<public https URL where the file is hosted>",
+      "Missing --url=<hosted-url> and no selfUrl in config.json to derive a default.",
     );
   }
-  if (!/^https:\/\//.test(hostedUrl)) {
+  if (!/^https:\/\//.test(resolvedUrl)) {
     throw new Error("--url must be an https:// URL.");
   }
 
-  const registry = parseFlag(args, "registry");
+  const registry = parseFlag(args, "registry") ?? cfg?.registry;
   if (!registry) {
-    throw new Error("Missing required flag --registry=<url>.");
+    throw new Error("Missing --registry=<url> and no registry in config.json.");
   }
 
-  const privateKeyHex = parseFlag(args, "private-key");
+  const privateKeyHex =
+    parseFlag(args, "private-key") ??
+    (await loadSignerKey(layout.signerKeyFile, opts));
   if (!privateKeyHex) {
-    throw new Error("Missing required flag --private-key=<hex>.");
+    throw new Error(
+      "Missing --private-key=<hex> and no signer.key in acc-data/keys/.",
+    );
   }
 
   // Read, validate, hash the skill markdown
   const absPath = resolve(filePath);
+  if (!existsSync(absPath)) {
+    throw new Error(`skill file not found: ${absPath}`);
+  }
   const raw = readFileSync(absPath, "utf-8");
   const parsed = parseSkillMd(raw); // throws on invalid frontmatter
   const skillSha256 = computeSkillSha256(raw);
@@ -72,13 +106,13 @@ export async function runPublish(args: string[]): Promise<void> {
     action: "publish",
     wallet: account.address,
     skill_id: parsed.frontmatter.skill_id,
-    skill_url: hostedUrl,
+    skill_url: resolvedUrl,
     skill_sha256: skillSha256,
     nonce: randomUUID(),
     submitted_at: Date.now(),
   };
 
-  const chainId = Number(process.env.EIP712_CHAIN_ID ?? 1);
+  const chainId = Number(process.env.EIP712_CHAIN_ID ?? cfg?.chainId ?? 1);
   const typedData = buildMarketplaceSubmissionTypedData(submission, chainId);
 
   const signature = await account.signTypedData({
@@ -106,7 +140,7 @@ export async function runPublish(args: string[]): Promise<void> {
   if (envelope.ok) {
     process.stdout.write(
       `Published "${parsed.frontmatter.name}" (${parsed.frontmatter.skill_id})\n` +
-        `  url:    ${hostedUrl}\n` +
+        `  url:    ${resolvedUrl}\n` +
         `  sha256: ${skillSha256}\n` +
         `  wallet: ${account.address}\n`,
     );
@@ -116,4 +150,30 @@ export async function runPublish(args: string[]): Promise<void> {
   const code = envelope.error?.code ?? `HTTP_${response.status}`;
   const message = envelope.error?.message ?? JSON.stringify(body);
   throw new Error(`Registry rejected submission [${code}]: ${message}`);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Zero-arg helpers                                                  */
+/* ------------------------------------------------------------------ */
+
+function stripTrailing(url: string): string {
+  return url.replace(/\/+$/, "");
+}
+
+async function loadSignerKey(
+  signerKeyFile: string,
+  opts: PublishOptions,
+): Promise<string | undefined> {
+  if (!existsSync(signerKeyFile)) return undefined;
+  const raw = readFileSync(signerKeyFile, "utf-8").trim();
+  if (!isWrappedSigner(raw)) return raw;
+
+  const io = opts.io ?? defaultPromptIO();
+  const prompter = createPrompter(io);
+  try {
+    const pass = await prompter.askSecret("Signer key passphrase");
+    return decryptSignerKey(raw, pass);
+  } finally {
+    prompter.close();
+  }
 }
