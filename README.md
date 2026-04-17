@@ -18,14 +18,16 @@ publish so user agents can discover and consume the endpoint.
  AI User Agent ──learns once──▶ Skill package (signed, from marketplace)
        │
        ▼  direct HTTP, UCP/1.0
- ┌────────────────────────────┐
- │  ACC Connector             │
- │  /ucp/v1/discovery         │
- │  /ucp/v1/search            │
- │  /ucp/v1/checkout-sessions │
- │  /ucp/v1/orders            │
- │  /skill/export  (new)      │
- └──────────┬─────────────────┘
+ ┌────────────────────────────────┐
+ │  ACC Connector                 │
+ │  /ucp/v1/discovery             │
+ │  /ucp/v1/search                │
+ │  /ucp/v1/checkout-sessions     │
+ │  /ucp/v1/orders                │
+ │  /auth/shopify/{install,callback}
+ │  /admin/shopify                │
+ │  /.well-known/acc-skill.md     │
+ └──────────┬─────────────────────┘
   CatalogAdapter · MerchantAdapter · PaymentProvider
             │
  Shopify · WooCommerce · Nexus stablecoins · …
@@ -35,32 +37,45 @@ publish so user agents can discover and consume the endpoint.
 
 ```
 packages/
-  connector/     @acc/connector    UCP façade + adapters + /skill/export
+  connector/     @acc/connector    UCP façade + Shopify OAuth + adapters
   skill-spec/    @acc/skill-spec   Normative spec + EIP-712 + JCS + schemas
-  cli/           @acc/cli          acc-skill {init,sign,publish,verify}
+  cli/           @acc/cli          'acc' — init wizard, shopify, wallet,
+                                   publish, skill (legacy 'acc-skill' alias)
 docs/
-  SKILL_SPEC.md                    Normative protocol spec (link to package)
-  plans/                           Design documents
+  MERCHANT_ONBOARDING.md           Step-by-step merchant setup guide
+  CLI.md                           Full command reference for 'acc'
+  SKILL_SPEC.md                    Normative protocol spec
+  plans/                           Design + execution plans
 ```
 
 The **marketplace** that hosts published skill packages lives in a **separate
 private repo** (`acc-marketplace`) and depends on `@acc/skill-spec` via npm.
 Anyone can build a compatible marketplace against the public spec.
 
-## Quick Start (connector)
+## Quick Start
 
 ```bash
-git clone https://github.com/example/agentic-commerce-connector.git
+git clone https://github.com/SELFVIBECODING/agentic-commerce-connector.git
 cd agentic-commerce-connector
-npm install
+npm install && npm run build
 
-cp packages/connector/env-examples/base.env .env
-# Fill in PLATFORM=shopify | woocommerce and credentials.
-# Generate a cart-token secret: openssl rand -hex 32
+# 8-step interactive wizard — creates ./acc-data/ with config.json, .env,
+# encryption key, signer wallet, Shopify creds, SQLite schema, skill.md.
+npx acc init
 
-npm run build
-npm start
+# Start the connector (reads ./acc-data/.env + ./acc-data/db/acc.sqlite).
+npm --workspace packages/connector start
+
+# In another terminal — prints install URL + QR, polls until install done.
+npx acc shopify connect --shop=<your-store>.myshopify.com
+
+# Edit the generated skill template, then publish to the marketplace.
+$EDITOR ./acc-data/skill/acc-skill.md
+npx acc publish
 ```
+
+Full walkthrough: [docs/MERCHANT_ONBOARDING.md](./docs/MERCHANT_ONBOARDING.md).
+All CLI commands: [docs/CLI.md](./docs/CLI.md).
 
 ### Docker
 
@@ -82,18 +97,24 @@ docker compose up -d
 
 ## Status
 
-- `packages/connector/` — working UCP façade, Shopify & WooCommerce adapters,
-  Nexus payment provider.
-- `packages/skill-spec/` — v0.1 stubs: types, EIP-712 typed data, JCS
-  canonicalization, JSON Schemas. Spec doc at `packages/skill-spec/SPEC.md`.
-- `packages/cli/` — command scaffolding. Implementations (init/sign/publish/
-  verify) land in follow-up PRs.
+- `packages/connector/` — UCP façade, Shopify adapter with full OAuth install
+  flow (HMAC + state + token exchange + storefront token mint + webhook
+  register), WooCommerce adapter, Nexus payment provider, AES-256-GCM
+  at-rest token encryption, SQLite + Postgres installation stores.
+- `packages/skill-spec/` — v0.1 types, EIP-712 typed data, JCS canonicalisation,
+  JSON Schemas. Spec doc at `packages/skill-spec/SPEC.md`.
+- `packages/cli/` — `acc` binary shipped: init (8-step wizard), shopify connect,
+  wallet (show/new/import), publish (zero-arg), skill init, version, help.
+  Deferred to later phases: `acc start/stop/status/doctor`, `acc skill edit`,
+  `acc shopify status/disconnect`.
 
 ## Documentation
 
-- Design: [docs/plans/2026-04-15-marketplace-pivot-design.md](./docs/plans/2026-04-15-marketplace-pivot-design.md)
-- Spec: [docs/SKILL_SPEC.md](./docs/SKILL_SPEC.md)
+- Merchant onboarding: [docs/MERCHANT_ONBOARDING.md](./docs/MERCHANT_ONBOARDING.md)
+- CLI reference: [docs/CLI.md](./docs/CLI.md)
+- Skill spec: [docs/SKILL_SPEC.md](./docs/SKILL_SPEC.md)
 - UCP compliance notes: [docs/ucp-compliance.md](./docs/ucp-compliance.md)
+- Design + execution plans: [docs/plans/](./docs/plans/)
 
 ## License
 
