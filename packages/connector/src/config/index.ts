@@ -15,6 +15,7 @@ import {
 import {
   loadPaymentEnv,
   type NexusPaymentEnv,
+  type NonePaymentEnv,
   type PaymentProviderType,
 } from "./payment.js";
 
@@ -28,19 +29,32 @@ export type {
   ShopifyOAuthEnv,
   WooCommerceEnv,
 } from "./commerce.js";
-export type { PaymentProviderType, NexusPaymentEnv } from "./payment.js";
+export type {
+  PaymentProviderType,
+  NexusPaymentEnv,
+  NonePaymentEnv,
+} from "./payment.js";
 
 // ---------------------------------------------------------------------------
 // Combined shape (back-compat with the old flat Config)
+//
+// NexusPaymentEnv and NonePaymentEnv share field shape (only `provider`
+// differs), so the flat intersection below surfaces the same keys either
+// way. Consumers that reach past `provider` into `nexusCoreUrl` /
+// `signerPrivateKey` / etc. read empty strings when payment is "none" —
+// any attempt to actually use them (fetch, sign) fails at the network
+// layer, which is the correct "payment unavailable" behaviour.
 // ---------------------------------------------------------------------------
+
+type PaymentCombined = NexusPaymentEnv | NonePaymentEnv;
 
 type ShopifyCombined = BaseConfig &
   Extract<CommerceEnv, { platform: "shopify" }> &
-  NexusPaymentEnv;
+  PaymentCombined;
 
 type WooCommerceCombined = BaseConfig &
   Extract<CommerceEnv, { platform: "woocommerce" }> &
-  NexusPaymentEnv;
+  PaymentCombined;
 
 export type ShopifyConfig = ShopifyCombined;
 export type WooCommerceConfig = WooCommerceCombined;
@@ -79,11 +93,11 @@ export function loadConfig(
     assertOAuthEncryptionKey(base.accEncryptionKey);
   }
 
-  // Flatten into the legacy shape (intersection types take care of narrowing).
-  // Payment provider only supports "nexus" today, so we can spread its fields
-  // safely; when we add another provider the discriminant prevents key leaks.
-  if (payment.provider === "nexus") {
-    return { ...base, ...commerce, ...payment } as Config;
-  }
-  throw new Error("Unreachable: unsupported payment provider");
+  // Flatten into the legacy shape. The payment env always shares the same
+  // field set (see payment.ts — NonePaymentEnv mirrors NexusPaymentEnv
+  // with empty strings), so the spread is uniform regardless of provider.
+  // Consumers that branch on `provider === "nexus"` still get narrowing;
+  // consumers that read payment fields directly silently get empty values
+  // when no provider is configured.
+  return { ...base, ...commerce, ...payment } as Config;
 }

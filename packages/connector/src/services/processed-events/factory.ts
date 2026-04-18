@@ -24,9 +24,9 @@ export interface SelectedProcessedEventStore {
   readonly describe: string;
 }
 
-export function selectProcessedEventStore(
+export async function selectProcessedEventStore(
   opts: SelectProcessedEventStoreOptions,
-): SelectedProcessedEventStore {
+): Promise<SelectedProcessedEventStore> {
   if (!opts.dataDir) {
     return {
       store: createMemoryProcessedEventStore(),
@@ -36,7 +36,7 @@ export function selectProcessedEventStore(
   const dbPath = resolve(opts.dataDir, "db", "processed-events.sqlite");
   mkdirSync(dirname(dbPath), { recursive: true });
   return {
-    store: createSqliteProcessedEventStore({ dbPath }),
+    store: await createSqliteProcessedEventStore({ dbPath }),
     describe: `sqlite at ${dbPath}`,
   };
 }

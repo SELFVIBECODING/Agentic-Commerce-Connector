@@ -278,10 +278,14 @@ describe("loadConfig", () => {
     process.env = originalEnv;
   });
 
-  it("throws when MERCHANT_SIGNER_PRIVATE_KEY is missing", () => {
-    // Set platform env first so we reach the payment-provider check
+  it("throws when MERCHANT_SIGNER_PRIVATE_KEY is missing with PAYMENT_PROVIDER=nexus", () => {
+    // Explicit PAYMENT_PROVIDER=nexus opts into the Nexus config path;
+    // without it, `loadConfig` now treats absent creds as the Phase 1
+    // default (PAYMENT_PROVIDER=none) and returns an empty-payment
+    // config instead of throwing.
     process.env.SHOPIFY_STORE_URL = "https://store.myshopify.com";
     process.env.SHOPIFY_STOREFRONT_TOKEN = "token";
+    process.env.PAYMENT_PROVIDER = "nexus";
     delete process.env.MERCHANT_SIGNER_PRIVATE_KEY;
     delete process.env.MERCHANT_PAYMENT_ADDRESS;
 
@@ -290,13 +294,30 @@ describe("loadConfig", () => {
     );
   });
 
-  it("throws when MERCHANT_PAYMENT_ADDRESS is missing", () => {
+  it("throws when MERCHANT_PAYMENT_ADDRESS is missing with PAYMENT_PROVIDER=nexus", () => {
     process.env.SHOPIFY_STORE_URL = "https://store.myshopify.com";
     process.env.SHOPIFY_STOREFRONT_TOKEN = "token";
+    process.env.PAYMENT_PROVIDER = "nexus";
     process.env.MERCHANT_SIGNER_PRIVATE_KEY = "0xtest";
     delete process.env.MERCHANT_PAYMENT_ADDRESS;
 
     expect(() => loadConfig()).toThrow("MERCHANT_PAYMENT_ADDRESS is required");
+  });
+
+  it("accepts PAYMENT_PROVIDER=none without any MERCHANT_* creds", () => {
+    // Phase 1 `acc init` writes PAYMENT_PROVIDER=none when no payment
+    // rail is wired yet. loadConfig must boot without throwing — it's
+    // the baseline every merchant starts from.
+    process.env.SHOPIFY_STORE_URL = "https://store.myshopify.com";
+    process.env.SHOPIFY_STOREFRONT_TOKEN = "token";
+    process.env.PAYMENT_PROVIDER = "none";
+    delete process.env.MERCHANT_SIGNER_PRIVATE_KEY;
+    delete process.env.MERCHANT_PAYMENT_ADDRESS;
+
+    const cfg = loadConfig();
+    expect(cfg.provider).toBe("none");
+    expect(cfg.signerPrivateKey).toBe("");
+    expect(cfg.paymentAddress).toBe("");
   });
 
   it("defaults PLATFORM to shopify", () => {

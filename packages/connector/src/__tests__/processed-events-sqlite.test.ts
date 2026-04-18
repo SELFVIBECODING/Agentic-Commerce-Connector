@@ -12,14 +12,17 @@ import { createSqliteProcessedEventStore } from "../services/processed-events/sq
 function tmpDbPath(): { dbPath: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "acc-events-"));
   const dbPath = join(dir, "processed-events.sqlite");
-  return { dbPath, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  return {
+    dbPath,
+    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+  };
 }
 
 describe("SqliteProcessedEventStore", () => {
   it("records and reports events idempotently", async () => {
     const { dbPath, cleanup } = tmpDbPath();
     try {
-      const store = createSqliteProcessedEventStore({ dbPath });
+      const store = await createSqliteProcessedEventStore({ dbPath });
 
       expect(await store.has("evt_1")).toBe(false);
       await store.add("evt_1", 1000);
@@ -38,11 +41,11 @@ describe("SqliteProcessedEventStore", () => {
   it("survives process restart (reopen the same db file)", async () => {
     const { dbPath, cleanup } = tmpDbPath();
     try {
-      const first = createSqliteProcessedEventStore({ dbPath });
+      const first = await createSqliteProcessedEventStore({ dbPath });
       await first.add("evt_restart", 5000);
       first.close();
 
-      const second = createSqliteProcessedEventStore({ dbPath });
+      const second = await createSqliteProcessedEventStore({ dbPath });
       expect(await second.has("evt_restart")).toBe(true);
       second.close();
     } finally {
@@ -53,7 +56,7 @@ describe("SqliteProcessedEventStore", () => {
   it("prune removes rows older than the TTL", async () => {
     const { dbPath, cleanup } = tmpDbPath();
     try {
-      const store = createSqliteProcessedEventStore({ dbPath });
+      const store = await createSqliteProcessedEventStore({ dbPath });
       await store.add("old", 1_000);
       await store.add("new", 10_000);
 

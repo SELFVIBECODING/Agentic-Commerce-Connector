@@ -126,7 +126,7 @@ const ORDER_PREFIX_MAP: Record<string, string> = {
   woocommerce: "WOO",
 };
 
-function bootstrap(): void {
+async function bootstrap(): Promise<void> {
   config = loadConfig();
   transportMode = process.env.TRANSPORT ?? "stdio";
 
@@ -161,7 +161,11 @@ function bootstrap(): void {
   merchant = adapters.merchant;
   productCache = adapters.productCache;
 
-  if (!isOAuthOnly) {
+  if (!isOAuthOnly && config.provider === "nexus") {
+    // Reconciler polls nexus-core — skip entirely when no payment provider
+    // is wired (PAYMENT_PROVIDER=none from Phase 1 `acc init`). Without
+    // this gate the reconciler would try to poll the empty `nexusCoreUrl`
+    // placeholder and log connection errors in a loop.
     startReconciler({
       nexusCoreUrl: config.nexusCoreUrl,
       merchantDid: config.merchantDid,
@@ -171,7 +175,7 @@ function bootstrap(): void {
   // Processed-event store — persistent when ACC_DATA_DIR is set, in-memory
   // otherwise. Persistence is what makes `payment.escrowed` dedup survive a
   // pod restart so Nexus's retry loop can't trigger double settlement.
-  const selectedEventStore = selectProcessedEventStore({
+  const selectedEventStore = await selectProcessedEventStore({
     dataDir: process.env.ACC_DATA_DIR,
   });
   processedEventStore = selectedEventStore.store;
@@ -559,7 +563,7 @@ function createMcpServer(): McpServer {
 // ── Start server ─────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  bootstrap();
+  await bootstrap();
   if (transportMode === "http") {
     await startHttpMode();
   } else {
@@ -768,13 +772,21 @@ async function startHttpMode(): Promise<void> {
   const cartTokenConfig = loadCartTokenConfig(process.env);
   const selfUrl = config.selfUrl || `http://localhost:${config.portalPort}`;
 
-  // Payment provider (NUPS/1.5 Nexus) — surfaces itself to UCP discovery
-  const nexusPaymentConfig = loadNexusPaymentConfig(process.env);
-  const paymentProvider = createNexusPaymentProvider(
-    nexusPaymentConfig,
-    config.merchantDid,
-  );
-  const paymentHandlers: UcpPaymentHandlerT[] = [paymentProvider.describe()];
+  // Payment provider (NUPS/1.5 Nexus) — instantiated only when
+  // PAYMENT_PROVIDER=nexus. Phase 1 `acc init` defaults merchants to
+  // `PAYMENT_PROVIDER=none`, in which case we expose an empty
+  // `payment_handlers` array in UCP discovery. Checkout attempts against
+  // the connector in that state return PAYMENT_PROVIDER_UNAVAILABLE via
+  // the existing UCP error path.
+  const paymentHandlers: UcpPaymentHandlerT[] = [];
+  if (config.provider === "nexus") {
+    const nexusPaymentConfig = loadNexusPaymentConfig(process.env);
+    const paymentProvider = createNexusPaymentProvider(
+      nexusPaymentConfig,
+      config.merchantDid,
+    );
+    paymentHandlers.push(paymentProvider.describe());
+  }
   registerUcpDeps({
     config,
     catalog,
@@ -795,14 +807,18 @@ async function startHttpMode(): Promise<void> {
   console.error(`  MCP:   http://localhost:${config.portalPort}/mcp`);
   console.error(`  Skill: http://localhost:${config.portalPort}/skill.md`);
 
-  // Fire-and-forget self-registration with nexus-core. The function already
-  // wraps its own body in try/catch and logs any failure as non-fatal; this
-  // outer catch exists only to prevent an unhandledRejection if that inner
-  // handler itself throws (e.g. the crypto import being unavailable). It
-  // MUST log rather than swallow so a second-level failure stays visible.
-  registerWithNexusCore().catch((err) => {
-    console.error("[Register] Second-level failure (non-fatal):", err);
-  });
+  // Fire-and-forget self-registration with nexus-core. Skipped when
+  // PAYMENT_PROVIDER=none — registration requires the NUPS signer key to
+  // sign the EIP-712 NexusRequest payload, and there's no nexus-core to
+  // talk to in the no-payment-provider state. The outer catch exists
+  // only to prevent an unhandledRejection if the inner handler itself
+  // throws; it logs rather than swallows so second-level failures stay
+  // visible.
+  if (config.provider === "nexus") {
+    registerWithNexusCore().catch((err) => {
+      console.error("[Register] Second-level failure (non-fatal):", err);
+    });
+  }
 }
 
 process.on("SIGTERM", () => {
@@ -810,7 +826,35 @@ process.on("SIGTERM", () => {
   closePool().catch(() => {});
 });
 
-main().catch((err) => {
-  console.error("Failed to start Commerce Agent:", err);
-  process.exit(1);
-});
+/**
+ * Public entry point for library consumers (the CLI `acc start` command,
+ * tests, custom embeddings). Loads config from env, brings up the HTTP or
+ * stdio transport, and returns once the portal is listening. Signal handlers
+ * are registered at module scope so the caller is not responsible for
+ * graceful shutdown wiring.
+ */
+export async function startServer(): Promise<void> {
+  return main();
+}
+
+// Auto-run only when this file is invoked directly (`node build/server.js`
+// or the Bun-compiled binary). When imported from `@acc/connector/server`
+// by the CLI, `startServer()` is the intended entry — not this top-level
+// invocation — so we gate it on the invocation mode.
+//
+// Three invocation shapes we need to cover:
+//   1. `node build/server.js`        → argv[1] ends with /server.js
+//   2. Bun-compiled binary            → argv[1] is the binary path; Bun
+//      is the runtime, detected via process.versions.bun
+//   3. Imported by CLI (acc start)    → argv[1] is the acc entry; no
+//      auto-run desired
+const entry = process.argv[1] ?? "";
+const isBunCompiled =
+  typeof (process as unknown as { versions?: Record<string, string> }).versions
+    ?.bun === "string";
+if (/(^|\/)server\.js$/.test(entry) && !isBunCompiled) {
+  main().catch((err) => {
+    console.error("Failed to start Commerce Agent:", err);
+    process.exit(1);
+  });
+}
