@@ -97,3 +97,52 @@ describe("createPrompter.askSecret", () => {
     expect(io.output).toContain("SECRET:pw?");
   });
 });
+
+describe("createPrompter.askMultiChoice (non-TTY fallback)", () => {
+  // Tests run under vitest which does not attach a TTY to stdin, so the
+  // fallback letter-key path is what we can exercise here. The TTY
+  // arrow-key path is covered by manual terminal testing.
+
+  it("parses comma-separated letters and returns keys in catalog order", async () => {
+    const p = createPrompter(mockIO(["a,c"]));
+    const picked = await p.askMultiChoice("pick", [
+      { key: "a", label: "Apple" },
+      { key: "b", label: "Banana" },
+      { key: "c", label: "Cherry" },
+    ]);
+    expect(picked).toEqual(["a", "c"]);
+  });
+
+  it("returns catalog order even when input letters are reversed", async () => {
+    const p = createPrompter(mockIO(["c,a"]));
+    const picked = await p.askMultiChoice("pick", [
+      { key: "a", label: "Apple" },
+      { key: "b", label: "Banana" },
+      { key: "c", label: "Cherry" },
+    ]);
+    // Catalog order wins for skill.md hash stability.
+    expect(picked).toEqual(["a", "c"]);
+  });
+
+  it("re-asks when fewer than min letters are picked", async () => {
+    const p = createPrompter(mockIO(["", "a,b"]));
+    const picked = await p.askMultiChoice(
+      "pick",
+      [
+        { key: "a", label: "Apple" },
+        { key: "b", label: "Banana" },
+      ],
+      { min: 2 },
+    );
+    expect(picked).toEqual(["a", "b"]);
+  });
+
+  it("re-asks on any unknown letter in the input", async () => {
+    const p = createPrompter(mockIO(["a,z", "a"]));
+    const picked = await p.askMultiChoice("pick", [
+      { key: "a", label: "Apple" },
+      { key: "b", label: "Banana" },
+    ]);
+    expect(picked).toEqual(["a"]);
+  });
+});

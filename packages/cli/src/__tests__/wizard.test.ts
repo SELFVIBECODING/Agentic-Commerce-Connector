@@ -31,7 +31,7 @@ const SEED = {
   signer: "generate" as const,
 };
 
-describe("runInit — non-interactive seed (full 8-step path)", () => {
+describe("runInit — non-interactive seed (full 9-step path)", () => {
   let tmp: string;
   let stdoutSpy: ReturnType<typeof vi.spyOn>;
 
@@ -86,13 +86,15 @@ describe("runInit — non-interactive seed (full 8-step path)", () => {
   it("is idempotent at seed-level when force flag is passed", async () => {
     const dataDir = join(tmp, "acc-data");
     await runInit([`--data-dir=${dataDir}`], { io: queueIO([]), seed: SEED });
-    const firstWallet = loadConfig(join(dataDir, "config.json"))?.wallet?.address;
+    const firstWallet = loadConfig(join(dataDir, "config.json"))?.wallet
+      ?.address;
 
     await runInit([`--data-dir=${dataDir}`, "--force"], {
       io: queueIO([]),
       seed: SEED,
     });
-    const secondWallet = loadConfig(join(dataDir, "config.json"))?.wallet?.address;
+    const secondWallet = loadConfig(join(dataDir, "config.json"))?.wallet
+      ?.address;
     // signer.key is preserved when it already exists, so address must match
     expect(secondWallet).toBe(firstWallet);
   });

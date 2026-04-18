@@ -59,6 +59,21 @@ export async function runPublish(
     );
   }
 
+  // Fail fast on a missing skill file BEFORE anything that has side effects
+  // or prompts the user: no signer-passphrase prompt, no registry lookup,
+  // no fetch. The caller is about to commit a signed submission pointing at
+  // a hash derived from this file; if the file isn't where we expect it,
+  // publishing a stale hash to the marketplace is strictly worse than
+  // exiting loudly here.
+  const absPath = resolve(filePath);
+  if (!existsSync(absPath)) {
+    throw new Error(
+      `skill file not found at ${absPath}.\n` +
+        `  Run 'acc init shopify' to generate one, or pass --data-dir=<path>\n` +
+        `  to point at an existing ACC data directory that already has skill.md.`,
+    );
+  }
+
   const hostedUrl =
     (parseFlag(args, "url") ?? cfg?.selfUrl)
       ? stripTrailing((parseFlag(args, "url") ?? cfg?.selfUrl)!) +
@@ -90,10 +105,6 @@ export async function runPublish(
   }
 
   // Read, validate, hash the skill markdown
-  const absPath = resolve(filePath);
-  if (!existsSync(absPath)) {
-    throw new Error(`skill file not found: ${absPath}`);
-  }
   const raw = readFileSync(absPath, "utf-8");
   const parsed = parseSkillMd(raw); // throws on invalid frontmatter
   const skillSha256 = computeSkillSha256(raw);

@@ -6,7 +6,7 @@
 // read-only to detect success.
 // ---------------------------------------------------------------------------
 
-import Database from "better-sqlite3";
+import { openSqlite } from "@acc/connector/sqlite";
 import { existsSync } from "node:fs";
 import { resolveDataDir } from "../../shared/data-dir.js";
 import { loadConfig } from "../../shared/config-store.js";
@@ -36,9 +36,12 @@ export interface ConnectResult {
 export async function runShopifyConnect(args: string[]): Promise<void> {
   const flags = parseFlags(args);
   const shop = flags.get("shop");
-  if (!shop) throw new Error("Usage: acc shopify connect --shop=<X>.myshopify.com");
+  if (!shop)
+    throw new Error("Usage: acc shopify connect --shop=<X>.myshopify.com");
   if (!SHOP_RE.test(shop)) {
-    throw new Error(`invalid shop domain: ${shop} (expected <handle>.myshopify.com)`);
+    throw new Error(
+      `invalid shop domain: ${shop} (expected <handle>.myshopify.com)`,
+    );
   }
   const result = await connect({
     shop,
@@ -62,7 +65,9 @@ export async function connect(opts: ConnectOptions): Promise<ConnectResult> {
 
   const installUrl = `${config.selfUrl.replace(/\/+$/, "")}/auth/shopify/install?shop=${encodeURIComponent(opts.shop)}`;
 
-  process.stdout.write(`\nShopify install URL for ${opts.shop}:\n  ${installUrl}\n\n`);
+  process.stdout.write(
+    `\nShopify install URL for ${opts.shop}:\n  ${installUrl}\n\n`,
+  );
   if (!opts.printUrlOnly && !opts.skipQr) {
     process.stdout.write(renderQr(installUrl) + "\n");
   }
@@ -89,30 +94,31 @@ async function pollUntilInstalled(
   shop: string,
   opts: ConnectOptions,
 ): Promise<boolean> {
-  const sleep = opts.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  const sleep =
+    opts.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const now = opts.now ?? Date.now;
   const deadline = now() + POLL_TIMEOUT_MS;
 
   process.stdout.write("Polling for installation…\n");
   while (now() < deadline) {
-    const installed = readInstalled(dbPath, shop);
+    const installed = await readInstalled(dbPath, shop);
     if (installed) return true;
     await sleep(POLL_INTERVAL_MS);
   }
   return false;
 }
 
-function readInstalled(dbPath: string, shop: string): boolean {
-  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+async function readInstalled(dbPath: string, shop: string): Promise<boolean> {
+  const db = await openSqlite(dbPath);
   try {
     const row = db
-      .prepare<
-        [string],
-        { installed_at: number; uninstalled_at: number | null }
-      >(
+      .prepare(
         "SELECT installed_at, uninstalled_at FROM shopify_installations WHERE shop_domain = ?",
       )
-      .get(shop);
+      .get([shop]) as
+      | { installed_at: number; uninstalled_at: number | null }
+      | undefined
+      | null;
     if (!row) return false;
     return row.uninstalled_at === null;
   } finally {
