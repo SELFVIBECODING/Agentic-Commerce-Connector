@@ -8,8 +8,9 @@
 ## 1. Summary
 
 Add an **optional install path** for merchants who can't (or don't want to)
-register their own Shopify Partners account. A maintainer-hosted relay
-(`install.siliconretail.com`) holds a single shared Partners app's
+register their own Shopify Partners account. A Silicon Retail-operated relay
+(at `https://api.siliconretail.com/relayer/*`, co-tenant with the
+marketplace API on the same domain) holds a single shared Partners app's
 `client_secret`, handles Shopify's OAuth callback, and hands freshly-minted
 access tokens to the merchant's self-hosted ACC connector via a short-lived
 pair session.
@@ -18,6 +19,25 @@ pair session.
 merchant's connector talks to Shopify Admin/Storefront APIs directly with
 its own access token. Silicon Retail participates only during install and
 (for 2024-Q4+ expiring tokens) periodic refresh.
+
+**Code lives in two repos:**
+- **Public `Agentic-Commerce-Connector` repo:** the pair protocol spec
+  (this document + `docs/spec/relayer-protocol.md` in M1), the CLI
+  client that speaks it (`acc init shopify --via=siliconretail`), and
+  the connector-side refresh worker. Anyone reading the public repo
+  can audit exactly what the merchant's CLI/connector sends and receives.
+- **Private `acc-marketplace` repo (siliconretail.com-operated):** the
+  specific server implementation of the relay at
+  `services/relayer/`, mounted on the marketplace's reverse proxy under
+  the `/relayer` path. Partners app credentials, encryption keys, and
+  the installation registry live with the marketplace's operational
+  infrastructure.
+
+This split keeps the protocol transparent while acknowledging that
+running a Shopify Custom Distribution relay is an operational commitment
+with real costs (Partners account, capacity management, GDPR data
+processor status). A sibling ecosystem operator who wants their own
+relay follows the public protocol spec and builds their own server.
 
 ## 2. Goals and non-goals
 
@@ -30,9 +50,10 @@ its own access token. Silicon Retail participates only during install and
   connector finished installing can survive the relay going offline
   permanently (for non-expiring offline tokens) or for the duration of a
   single access-token lifetime (for expiring tokens).
-- Relay code lives in the public monorepo (`packages/install-relay/`) —
-  any ecosystem operator can fork + self-deploy, there is no "closed"
-  tier.
+- Relay protocol is documented publicly (in this repo); relay
+  implementation is operated by Silicon Retail from the private
+  `acc-marketplace` repo. Ecosystem operators wanting to run their own
+  relay follow the published spec — no private code to license.
 - Clean fallback: the existing per-merchant Partners flow
   (`acc init shopify`, no `--via` flag) continues to work verbatim.
 - Complies with Shopify Custom Distribution rules (≤50 stores per app)
@@ -49,17 +70,22 @@ its own access token. Silicon Retail participates only during install and
   installation. CLI is the only interaction surface for v0.6.0.
 - Operator UI for the maintainer. Monitoring + abuse controls go through
   plain logs + one emergency CLI script in v0.6.0.
+- Stream B (Nexus payment wiring) in parallel. Stream B is deferred
+  until Stream A ships — merchants install via relay, see
+  `supported_payments: []` on their published skill, and wait for a
+  later release to enable a rail. The relay's `skill.md` auto-emit
+  does not depend on payment providers.
 
 ## 3. Architecture
 
 ### 3.1 Install flow
 
 ```
-┌──────────────┐                          ┌─────────────────────────┐
-│  Merchant's  │                          │   install.siliconretail │
-│     CLI      │                          │     (maintainer host)   │
-└──────┬───────┘                          └────────────┬────────────┘
-       │  POST /pair/new {shop, connector_url}         │
+┌──────────────┐                          ┌───────────────────────────┐
+│  Merchant's  │                          │ api.siliconretail.com     │
+│     CLI      │                          │   /relayer/*              │
+└──────┬───────┘                          └────────────┬──────────────┘
+       │  POST /relayer/pair/new {shop, connector_url} │
        ├──────────────────────────────────────────────▶│
        │                                               │ issue pair_code
        │                                               │ state = pair_code
@@ -68,12 +94,12 @@ its own access token. Silicon Retail participates only during install and
        │  open browser → install_url                   │
        │  ▶ merchant approves on Shopify               │
        │                                               │
-       │                                ┌──────────────┴──────────────┐
-       │                                │  Shopify redirects:         │
-       │                                │  GET /auth/shopify/callback │
-       │                                │  ?code=...&state=<pair_code>│
-       │                                │  &hmac=...&shop=...         │
-       │                                └──────────────┬──────────────┘
+       │                            ┌──────────────────┴─────────────────┐
+       │                            │  Shopify redirects:                │
+       │                            │  GET /relayer/auth/shopify/callback│
+       │                            │  ?code=...&state=<pair_code>       │
+       │                            │  &hmac=...&shop=...                │
+       │                            └──────────────────┬─────────────────┘
        │                                               │ verify HMAC
        │                                               │ look up pair
        │                                               │ exchange code→tok
@@ -82,20 +108,20 @@ its own access token. Silicon Retail participates only during install and
        │                                               │ pair session keyed
        │                                               │ by pair_code
        │                                               │
-       │  GET /pair/poll?code=<pair_code>              │
+       │  GET /relayer/pair/poll?code=<pair_code>      │
        ├─(every 2s)──────────────────────────────────▶│
        │  ◀──{status: "pending"}───────────────────────┤ (until callback)
        │                                               │
-       │  GET /pair/poll (after callback)              │
+       │  GET /relayer/pair/poll (after callback)      │
        ├──────────────────────────────────────────────▶│
        │  ◀──{status: "ready", access_token,           │
        │      storefront_token, scopes, refresh_token, │
-       │      token_expires_at}────────────────────────┤
+       │      token_expires_at, relay_secret}──────────┤
        │                                               │
-       │  write tokens to local SQLite                 │
+       │  write tokens + relay_secret to local SQLite  │
        │  delete pair session                          │
        │                                               │
-       │  POST /pair/consume?code=...                  │
+       │  POST /relayer/pair/consume?code=...          │
        ├──────────────────────────────────────────────▶│
        │                                               │ purge pair, store
        │                                               │ shop_domain →
@@ -128,24 +154,24 @@ after the token lifetime (~24h). The relay hosts `client_secret` and
 can exchange the stored `refresh_token` for a new access token.
 
 ```
-┌──────────────┐                          ┌──────────────────┐
-│  Merchant    │                          │  install.silicon │
-│  connector   │                          │      retail      │
-└──────┬───────┘                          └────────┬─────────┘
-       │ (detect: token_expires_at within 1h)      │
-       │                                           │
-       │ POST /refresh {shop, refresh_token}       │
-       ├──────────────────────────────────────────▶│
-       │                                           │ POST Shopify
-       │                                           │ /admin/oauth/access_token
-       │                                           │ with client_secret
-       │                                           │ + refresh_token
-       │                                           │
-       │ ◀─{access_token, refresh_token,           │
-       │    token_expires_at}──────────────────────┤
-       │                                           │
-       │ update local SQLite                       │
-       │ update installation-store.tokenExpiresAt  │
+┌──────────────┐                          ┌──────────────────────┐
+│  Merchant    │                          │ api.siliconretail.com│
+│  connector   │                          │     /relayer/*       │
+└──────┬───────┘                          └──────────┬───────────┘
+       │ (detect: token_expires_at within 1h)        │
+       │                                             │
+       │ POST /relayer/refresh {shop, refresh_token} │
+       ├────────────────────────────────────────────▶│
+       │                                             │ POST Shopify
+       │                                             │ /admin/oauth/access_token
+       │                                             │ with client_secret
+       │                                             │ + refresh_token
+       │                                             │
+       │ ◀─{access_token, refresh_token,             │
+       │    token_expires_at}────────────────────────┤
+       │                                             │
+       │ update local SQLite                         │
+       │ update installation-store.tokenExpiresAt    │
 ```
 
 Relay can rotate the `refresh_token` client-side; each successful
@@ -161,7 +187,7 @@ and forwards to the right merchant connector using the persistent
 `shop_domain → connector_url` mapping.
 
 ```
-┌──────────┐     POST /webhooks/gdpr/<topic>                 ┌──────────┐
+┌──────────┐     POST /relayer/webhooks/gdpr/<topic>         ┌──────────┐
 │ Shopify  ├────────────────────────────────────────────────▶│  Relay   │
 └──────────┘  HMAC-signed with client_secret                 └────┬─────┘
                                                                   │ verify HMAC
@@ -196,7 +222,12 @@ All endpoints are unauthenticated at the HTTP layer; individual methods
 rely on Shopify's HMAC (callback + GDPR webhooks) or on the
 merchant-held `refresh_token` (acting as a capability).
 
-### `POST /pair/new`
+All paths below are rooted at `https://api.siliconretail.com/relayer`.
+The marketplace's own routes (e.g. `POST /v1/submissions`) live as
+siblings under the same domain; the relay is mounted behind the same
+reverse proxy via path-routing on `/relayer/*`.
+
+### `POST /relayer/pair/new`
 
 **Request:**
 ```json
@@ -218,7 +249,7 @@ merchant-held `refresh_token` (acting as a capability).
 {
   "pair_code": "a3f2b8...",          // 32-byte hex
   "install_url": "https://myshop.myshopify.com/admin/oauth/authorize?client_id=...&scope=...&redirect_uri=...&state=<pair_code>",
-  "poll_url": "https://install.siliconretail.com/pair/poll?code=<pair_code>",
+  "poll_url": "https://api.siliconretail.com/relayer/pair/poll?code=<pair_code>",
   "expires_in": 600
 }
 ```
@@ -229,7 +260,7 @@ Turnstile when abuse materializes).
 **Response 503:** `{"error": "capacity_exhausted"}` when approaching the
 50-store cap (warn at 45, hard-stop at 50).
 
-### `GET /pair/poll?code=<pair_code>`
+### `GET /relayer/pair/poll?code=<pair_code>`
 
 **Response 200 (pending):**
 ```json
@@ -254,7 +285,7 @@ Turnstile when abuse materializes).
 **Response 404:** `{"status": "unknown"}` — pair_code was never issued or
 already consumed.
 
-### `POST /pair/consume`
+### `POST /relayer/pair/consume`
 
 **Request:**
 ```json
@@ -264,7 +295,7 @@ already consumed.
 **Response 200:** `{"ok": true}`. Purges the in-memory pair session (so
 a replayed `/pair/poll` returns 404). Idempotent.
 
-### `GET /auth/shopify/callback`
+### `GET /relayer/auth/shopify/callback`
 
 Shopify-signed redirect. Query params: `code`, `state`, `hmac`, `shop`,
 `timestamp`. Relay-side:
@@ -279,7 +310,7 @@ Shopify-signed redirect. Query params: `code`, `state`, `hmac`, `shop`,
 6. Persist pair session (ready).
 7. Render an HTML "You can close this tab" success page.
 
-### `POST /refresh`
+### `POST /relayer/refresh`
 
 **Request:**
 ```json
@@ -306,7 +337,7 @@ Auth: anyone holding a valid `refresh_token` can call this; the
 `refresh_token` is itself the secret. Rate-limit to 60/hr/shop to catch
 buggy connectors stuck in refresh loops.
 
-### `POST /webhooks/gdpr/:topic`
+### `POST /relayer/webhooks/gdpr/:topic`
 
 `:topic` ∈ `{customers_data_request, customers_redact, shop_redact}`.
 HMAC-signed with `client_secret`. Relay verifies signature, looks up
@@ -500,18 +531,26 @@ pair codes when logging them.
 
 ### 7.5 Deployment
 
-Host: single VPS (Render / Fly / DigitalOcean) behind Cloudflare.
+The relay deploys as a sibling service to the marketplace API, both
+behind the same `api.siliconretail.com` reverse proxy.
+
 Requirements:
 
-- Postgres 14+ (~20 MB for 50 shops + DLQ)
-- 512 MB RAM minimum
-- Public HTTPS on `install.siliconretail.com` — Cloudflare handles TLS
-  termination + DDoS
-- `/pair/poll` benefits from HTTP/2 keepalive; Cloudflare does that
-  automatically
+- Same Postgres instance as the marketplace (shared DB cluster, separate
+  schema: `relayer_*` tables). ~20 MB for 50 shops + DLQ; negligible
+  next to the marketplace's own storage.
+- 512 MB RAM for the relay process (separate from the marketplace's
+  process; different failure domain).
+- Reverse proxy (nginx / Caddy / Cloudflare) routes `/relayer/*` → relay
+  service on localhost; everything else on `api.siliconretail.com` →
+  marketplace service.
+- Cloudflare in front for TLS termination + DDoS protection + HTTP/2
+  keepalive on `/relayer/pair/poll` long-polling.
 
-Dockerfile ships as part of the subpackage for anyone who wants to
-self-host a sibling relay.
+Deployment artifact: a Dockerfile in `services/relayer/` of the private
+`acc-marketplace` repo. Infrastructure-as-code lives with the
+marketplace's existing deploy tooling. No public Dockerfile ships — the
+protocol spec is public, the specific implementation is not.
 
 ## 8. CLI integration
 
@@ -535,14 +574,17 @@ pair/poll interaction. Prompts:
    `/pair/consume` to release relay state
 7. Write `.env`:
    ```
-   ACC_INSTALL_RELAY_URL=https://install.siliconretail.com
+   ACC_INSTALL_RELAY_URL=https://api.siliconretail.com/relayer
    SHOPIFY_STORE_URL=https://<shop>.myshopify.com
    SHOPIFY_CLIENT_ID=relay-hosted
    SHOPIFY_CLIENT_SECRET=
+   ACC_RELAY_SECRET=<per-shop value from /pair/poll response>
    ```
    Empty `SHOPIFY_CLIENT_SECRET` is a marker: connector detects it +
    routes refresh via `ACC_INSTALL_RELAY_URL` instead of calling
-   Shopify directly.
+   Shopify directly. `ACC_RELAY_SECRET` is the per-shop HMAC key the
+   connector uses to verify GDPR webhooks forwarded from the relay
+   (§5.3 option a).
 
 Without the flag, step 7 runs the existing per-merchant Partners path.
 
@@ -572,63 +614,147 @@ Shared-relay variant of step 7:
 
 Each milestone is independently mergeable and adds a testable surface.
 
-### M1. Relay core: `/pair/new`, `/pair/poll`, `/auth/shopify/callback` (1 week)
+### M1. Relay core + public protocol spec (1 week)
 
-- New `packages/install-relay/` with server + routes
+**Private repo (`acc-marketplace`):**
+- New `services/relayer/` with HTTP server + three routes:
+  `/relayer/pair/new`, `/relayer/pair/poll`, `/relayer/auth/shopify/callback`
 - In-memory `PairStore` with TTL
-- Reuse `verifyCallbackHmac` and `exchangeCodeForToken` from
-  `@acc/connector/shopify-oauth` via the new package export
+- Shopify OAuth primitives: HMAC verification + code→token exchange.
+  These are copied from `@acc/connector/shopify-oauth` (public repo) —
+  the private server doesn't depend on the public package at runtime
+  so that a future connector version bump doesn't force a relay redeploy.
 - Unit tests: HMAC verification, pair TTL, code→token happy path +
-  failure modes
-- Dockerfile + docker-compose for local dev
-- No DB yet; memory-only
+  failure modes.
+- Dockerfile in `services/relayer/` wired into the marketplace's
+  existing deploy pipeline.
+- No DB yet; memory-only pair sessions.
+
+**Public repo (`Agentic-Commerce-Connector`):**
+- `docs/spec/relayer-protocol.md` — normative spec for the pair/poll +
+  refresh protocol. HTTP endpoints, request/response schemas, HMAC
+  scheme, pair TTL semantics, error codes. This is what any sibling
+  operator implements if they want their own relay.
+- Ships in the same Phase 2 release as the connector CLI changes.
 
 ### M2. CLI `--via=siliconretail` flag (3 days)
 
-- Parse the flag in `init.ts`
-- Write the alt step 7 flow (or a step 7b wrapper)
-- Integration test: run CLI against a local relay container; assert
-  tokens land in merchant SQLite
-- Documentation pass: README Quick Start adds the alt install block
+**Public repo only:**
+- Parse `--via` in `init.ts`; accept values `siliconretail` (points at
+  `api.siliconretail.com/relayer`) or a custom URL (for sibling
+  operators running their own relay per the protocol spec from M1).
+- Write the alt step 7 flow (or a step 7b wrapper) that calls the
+  pair/poll endpoints defined by the spec.
+- Default relay URL is configurable via `ACC_DEFAULT_RELAY_URL` env at
+  build time so the public binary points at Silicon Retail but a fork
+  can swap it without code changes.
+- Integration test: run CLI against a local relay container (served
+  from the private repo's Dockerfile); assert tokens land in merchant
+  SQLite.
+- Documentation: README Quick Start adds the alt install block;
+  MERCHANT_ONBOARDING Appendix links to the protocol spec.
 
 ### M3. Durable installation registry + `/pair/consume` (3 days)
 
-- Postgres/SQLite-backed `relay_installations` table
-- `pair/consume` purges pair cache + persists registry row
-- Encrypted `refresh_token_enc` storage
+**Private repo only:**
+- Postgres-backed `relay_installations` table (same cluster as
+  marketplace, schema `relayer_*`).
+- `/relayer/pair/consume` purges pair cache + persists registry row.
+- Encrypted `refresh_token_enc` storage — AES-256-GCM with
+  `RELAY_ENC_KEY` loaded from the marketplace's secret manager.
+- Per-shop `relay_secret` generated at consume time and persisted in
+  the registry; returned to the CLI in the final `/pair/poll` response
+  so the merchant's `.env` picks it up (§5.3 option a).
 
-### M4. Token refresh (`/refresh` + connector worker) (4 days)
+### M4. Token refresh (`/relayer/refresh` + connector worker) (4 days)
 
-- Relay route: call Shopify refresh endpoint, rotate stored
-  `refresh_token_enc`, return new access token
-- Connector worker: scheduled check, call relay, update local
-  SQLite row atomically
-- Unit tests: successful refresh, rotation, 401 handling
+**Private repo:** relay route — call Shopify's refresh endpoint, rotate
+stored `refresh_token_enc`, return new access token + new expiry.
+
+**Public repo:** connector worker —
+
+- Runs every 15 minutes (no cron state; just `setInterval` scoped to
+  the `acc start` process lifetime; unreferenced via `unref()` so it
+  doesn't hold the process open).
+- On each tick: SELECT rows with `token_expires_at - now() < 1h`.
+- For each: POST `${ACC_INSTALL_RELAY_URL}/refresh` with
+  `{shop_domain, refresh_token}`.
+- On 200: UPDATE the row atomically with new access token + refresh
+  token + expiry.
+- On 401: mark the row `uninstalled_at = now()` and log — forces the
+  merchant to re-run `acc shopify connect --via=siliconretail`.
+
+Unit tests on both sides: successful refresh, token rotation, 401
+handling, deadline-window math.
 
 ### M5. GDPR webhook forwarding (4 days)
 
-- `POST /webhooks/gdpr/:topic` route with HMAC verify
-- Per-shop lookup + forward
-- DLQ table + exponential-backoff retry worker
-- Relay re-signs with per-shop `relay_secret` (delivered in
-  `/pair/consume` response; merchant stores)
-- Connector's existing `/webhooks/gdpr/*` handlers accept the new
-  relay-signed envelope as an additional valid source
+**Private repo:**
+- `POST /relayer/webhooks/gdpr/:topic` route with Shopify HMAC verify.
+- Per-shop lookup in `relayer_installations`, forward body to
+  `{connector_url}/webhooks/gdpr/{topic}`.
+- Relay re-signs the forwarded body with the per-shop `relay_secret`
+  (HMAC-SHA256), attaches as `X-ACC-Relay-Signature` header +
+  `X-ACC-Relay-Timestamp` for replay protection.
+- `relayer_gdpr_dlq` table + exponential-backoff retry worker
+  (1m → 5m → 30m → 2h → 12h → audit-log + drop).
+- Returns 2xx to Shopify unconditionally (compliance invariant).
 
-### M6. Ops polish + launch (3 days)
+**Public repo:**
+- Connector's existing `/webhooks/gdpr/*` handlers accept the
+  relay-signed envelope as an additional valid source: if
+  `X-ACC-Relay-Signature` is present, verify with `ACC_RELAY_SECRET`
+  from `.env`; otherwise fall back to Shopify-direct HMAC verification
+  (for non-relay installs).
 
-- `/health` + `/metrics`
-- Capacity monitoring at 45/50 with warn log
-- Uninstall webhook handling → free slot
-- DPA template (`docs/legal/DPA-relay.md`)
-- Load test: 50 concurrent `/pair/new` + 50 sustained `/pair/poll`
-  loops, assert no leaks
-- Deploy relay to `install.siliconretail.com`
-- Register Partners app under "Silicon Retail", fill privacy policy +
-  support URL
-- Tag connector `v0.6.0`, update README with the alt install path
+### M6. Ops polish + launch (5 days)
 
-**Total estimate: ~4 weeks one person.**
+**Private repo:**
+- `/relayer/health` (liveness + DB ping) + `/relayer/metrics` (Prom
+  text format: active_pairs, installs_completed, refresh_calls,
+  gdpr_forward_errors).
+- Capacity monitoring: warn at 45/50 in structured logs; hard-stop at
+  50 returning 503 from `/pair/new` with pointer to the per-merchant
+  Partners fallback.
+- Uninstall webhook handling: mark `uninstalled_at = now()` to free a
+  slot + cancel any pending refresh.
+- Load test: 50 concurrent `/relayer/pair/new` + 50 sustained
+  `/relayer/pair/poll` long-polls, assert no goroutine / connection
+  leaks, p99 latency targets.
+- Deploy to `api.siliconretail.com/relayer` via the marketplace's
+  deploy pipeline; reverse proxy path-routing wired.
+- Register Shopify Partners app under the "Silicon Retail" brand;
+  fill privacy policy + support URLs pointing at siliconretail.com.
+
+**Solo-ops runbook** (required, new in v0.6.0 since @ciphertang is the
+only on-call):
+
+- `docs/ops/relayer-runbook.md` (private repo). Covers:
+  - How to read `journalctl -u relayer` logs and what each structured
+    event means.
+  - Top 5 failure modes + diagnosis:
+    1. Shopify returns 401 on token exchange (client_secret rotated?)
+    2. DLQ backlog climbing (merchant connector down?)
+    3. Pair session expires before poll returns ready (network
+       latency? CLI bug?)
+    4. Capacity at 50 (list of stale installs to purge vs. start App
+       Store submission)
+    5. Database connection pool exhausted (marketplace and relay
+       share; bump pool size)
+  - Emergency procedures: rotate `SHOPIFY_CLIENT_SECRET` (updates
+    Partners + forces all merchants re-install); revoke a specific
+    merchant's tokens (malicious actor case); purge all pair sessions
+    + clear DLQ.
+  - How to manually run `/relayer/refresh` for one shop from a
+    maintenance shell (bypass the connector-side worker for testing).
+
+**Public repo:**
+- DPA template: `docs/legal/DPA-silicon-retail-relay.md` — merchant
+  can self-serve, no need to contact operator.
+- Tag connector `v0.6.0`, update README with the alt install path and
+  prominent "runtime doesn't touch the relay" reassurance.
+
+**Total estimate: ~4 weeks one person.** (M1 1wk + M2 3d + M3 3d + M4 4d + M5 4d + M6 5d ≈ 24 working days.)
 
 ## 10. Risks and open questions
 
@@ -647,24 +773,32 @@ Each milestone is independently mergeable and adds a testable surface.
   slots.** Mitigation: rate limit + Cloudflare Turnstile + abandoned-
   pair cleanup.
 
-### 10.2 Open questions for resolution before M1 starts
+### 10.2 Open questions — resolved 2026-04-19
 
-1. Does Nexus, Phase 2 Stream B, land before or after Stream A? If
-   before, Stream A's `skill.md` auto-emit includes `nexus-platon`
-   in `supported_payments`; if after, Stream A ships with empty
-   `supported_payments` until Stream B backfills. **Recommendation:
-   Stream A and B in parallel.**
-2. Public repo vs. private? **Recommendation: `packages/install-relay/`
-   in the public monorepo.** Transparent code + anyone can self-host
-   a sibling relay.
-3. GDPR forwarding auth: option (a) per-shop relay_secret vs. option
-   (b) relay's public-key envelope? **Recommendation: (a)**.
-4. Refresh cadence on the connector side: wake every 15 min (simple)
-   vs. wake exactly at `expires_at - 1h` (precise)? **Recommendation:
-   15 min; simpler, no cron state.**
-5. Who owns on-call for the relay in prod? If it's just @ciphertang,
-   documentation for solo ops (diagnostic runbooks) needs to be in M6
-   scope.
+All five questions resolved by the project owner before M1 kickoff.
+
+1. **Stream A / Stream B sequencing — decided: serial, A first.**
+   Stream B (Nexus payment wiring) is deferred until Stream A ships.
+   Merchants who install via the relay publish a skill.md with
+   `supported_payments: []` and wait for a later release to enable
+   a rail. No parallel work on payment providers during v0.6.0.
+2. **Repo location — decided: private `acc-marketplace` repo.** Server
+   implementation lives in `services/relayer/`; the protocol spec
+   (`docs/spec/relayer-protocol.md`) ships in the public
+   `Agentic-Commerce-Connector` repo so the wire protocol is auditable
+   and any sibling operator can implement a compatible relay. No
+   public Dockerfile / source for the server.
+3. **GDPR forwarding auth — decided: (a), per-shop `relay_secret`.**
+   Delivered in the final `/pair/poll` response; stored in merchant's
+   `.env` as `ACC_RELAY_SECRET`; used by relay to HMAC-sign forwarded
+   GDPR bodies via `X-ACC-Relay-Signature`.
+4. **Refresh cadence — decided: 15 minutes.** Connector-side worker
+   runs `setInterval(15 * 60 * 1000).unref()` scoped to `acc start`
+   process lifetime.
+5. **On-call — decided: @ciphertang (solo).** M6 scope expanded by
+   +2 days for `docs/ops/relayer-runbook.md` (in the private repo)
+   covering top-5 failure modes, emergency procedures, and one-off
+   maintenance commands.
 
 ## 11. Entry criteria
 
@@ -678,11 +812,12 @@ Before M1 kickoff:
 - [ ] Silicon Retail Shopify Partners app created with the shared
       Custom Distribution configuration (App URL, Support URL,
       Privacy Policy URL all under `siliconretail.com`)
-- [ ] `install.siliconretail.com` DNS + TLS provisioned (Cloudflare
-      Origin Rule to Render service, or equivalent)
+- [ ] `api.siliconretail.com` reverse proxy configured to path-route
+      `/relayer/*` to the relay service (sibling to the marketplace
+      API on the same domain + TLS cert)
 - [ ] DPA template drafted for legal review (can run in parallel with
       M1)
-- [ ] Open questions §10.2 all resolved
+- [x] Open questions §10.2 all resolved (2026-04-19)
 
 ## 12. Out-of-scope for v0.6.0
 
