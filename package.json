@@ -9,7 +9,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
+    "build": "npm run build -w @acc/skill-spec && npm run build -w @acc/connector && npm run build -w @acc/cli",
     "test": "npm run test --workspaces --if-present",
     "dev": "npm run dev --workspace packages/connector",
     "start": "npm run start --workspace packages/connector"
