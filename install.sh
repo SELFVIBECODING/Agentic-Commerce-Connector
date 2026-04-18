@@ -150,9 +150,11 @@ main() {
     msg "✓ Installed: $("$INSTALL_DIR/acc" version 2>/dev/null || printf 'acc (%s)\n' "$tag")"
     msg ""
     msg "Next:"
-    msg "  acc init shopify   # Shopify merchant setup wizard"
+    msg "  acc init           # pick a platform from the menu"
+    msg "  acc init shopify   # jump straight to the Shopify wizard"
     msg "  acc start          # boot the connector"
     msg "  acc doctor         # diagnose issues"
+    msg "  acc help           # full command reference"
 }
 
 main "$@"
