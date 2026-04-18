@@ -804,7 +804,7 @@ All five questions resolved by the project owner before M1 kickoff.
 
 Before M1 kickoff:
 
-- [ ] Phase 1 (feat/binary-install) merged to main + `v0.4.0` tagged
+- [x] Phase 1 (feat/binary-install) merged to main + `v0.4.0` tagged (2026-04-19)
 - [ ] At least one pilot merchant has run Phase 1 end-to-end against a
       real Shopify store (validating that the per-merchant path works
       before we add a second path that depends on the same connector
