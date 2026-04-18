@@ -3,7 +3,7 @@
 # One-command server installer for ACC (Shopify merchants).
 #
 # Usage:
-#   curl -fsSL https://www.siliconretail.com/install-server.sh | \
+#   curl -fsSL https://raw.githubusercontent.com/SELFVIBECODING/Agentic-Commerce-Connector/main/deploy/scripts/install-server.sh | \
 #     ACC_PUBLIC_HOSTNAME=acc.mystore.com bash
 #
 # Optional env vars:
@@ -74,7 +74,7 @@ CADDY
 if [ -z "${ACC_PUBLIC_HOSTNAME}" ]; then
     cat >&2 <<EOF
 error: ACC_PUBLIC_HOSTNAME is required.
-       curl -fsSL https://www.siliconretail.com/install-server.sh | \\
+       curl -fsSL https://raw.githubusercontent.com/SELFVIBECODING/Agentic-Commerce-Connector/main/deploy/scripts/install-server.sh | \\
          ACC_PUBLIC_HOSTNAME=acc.mystore.com bash
 EOF
     exit 2
@@ -136,7 +136,7 @@ fi
 
 if [ ! -x "/home/${ACC_USER}/.acc/bin/acc" ]; then
     echo "→ Installing acc binary for ${ACC_USER}…"
-    sudo -u "${ACC_USER}" -- bash -c 'curl -fsSL https://www.siliconretail.com/install.sh | sh'
+    sudo -u "${ACC_USER}" -- bash -c 'curl -fsSL https://raw.githubusercontent.com/SELFVIBECODING/Agentic-Commerce-Connector/main/install.sh | sh'
 else
     echo "✓ acc binary already present"
 fi

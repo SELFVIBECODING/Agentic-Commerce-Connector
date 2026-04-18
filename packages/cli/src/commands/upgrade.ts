@@ -8,7 +8,8 @@
 
 import { spawn } from "node:child_process";
 
-const INSTALL_URL = "https://www.siliconretail.com/install.sh";
+const INSTALL_URL =
+  "https://raw.githubusercontent.com/SELFVIBECODING/Agentic-Commerce-Connector/main/install.sh";
 
 export async function runUpgrade(args: readonly string[]): Promise<void> {
   const flags = parseFlags(args);

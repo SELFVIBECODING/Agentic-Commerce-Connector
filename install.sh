@@ -1,9 +1,9 @@
 #!/usr/bin/env sh
 # shellcheck shell=sh
 # ---------------------------------------------------------------------------
-# acc installer — served at https://www.siliconretail.com/install.sh
+# acc installer — served at https://raw.githubusercontent.com/SELFVIBECODING/Agentic-Commerce-Connector/main/install.sh
 #
-#   curl -fsSL https://www.siliconretail.com/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/SELFVIBECODING/Agentic-Commerce-Connector/main/install.sh | sh
 #
 # Detects OS/arch, downloads the matching release tarball from GitHub, and
 # installs the `acc` binary to ~/.acc/bin (overridable via ACC_INSTALL_DIR).
