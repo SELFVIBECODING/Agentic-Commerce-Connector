@@ -1,35 +1,187 @@
+// ---------------------------------------------------------------------------
+// Step 8 — auto-populate skill.md for direct publishing.
+//
+// The connector itself serves the skill file at `${SELF_URL}/.well-known/
+// acc-skill.md` (see packages/connector/src/portal.ts). Because every ACC
+// deployment MUST have a public HTTPS endpoint, we never need the merchant
+// to stand up a separate static host for the skill file — the connector's
+// own route is the canonical hosting.
+//
+// Consequently the template we write here is already publish-ready: every
+// frontmatter field has a sensible default derived from ctx.config + the
+// selected platform. Merchants can still edit it for description /
+// categories / tags polish, but they don't have to before running `acc
+// publish`. The marketplace re-fetches the file over HTTPS and re-hashes
+// it, so any edits flow through on the next publish.
+// ---------------------------------------------------------------------------
+
 import { writeFileSync, existsSync } from "node:fs";
 import { buildSkillMd, type SkillFrontmatter } from "@acc/skill-spec";
 import type { StepContext, StepOutcome } from "./context.js";
 
-const TEMPLATE_FRONTMATTER: SkillFrontmatter = {
-  name: "My Store",
-  description:
-    "Short one-line pitch for the marketplace listing (<= 280 chars).",
-  skill_id: "my-store-v1",
-  categories: ["digital"],
-  supported_platforms: ["custom"],
-  supported_payments: ["stripe"],
-  health_url: "https://store.example.com/health",
-  tags: ["placeholder"],
-  website_url: "https://store.example.com",
-};
-
-const TEMPLATE_BODY = `# My Store
-
-Describe what your store exposes to AI agents. Replace the frontmatter
-above and this body, then run \`acc publish\` to submit to the marketplace.
-`;
-
 export async function stepSkill(ctx: StepContext): Promise<StepOutcome> {
   if (existsSync(ctx.layout.skillMd) && !ctx.force) {
+    // Preserve merchant edits across `acc init` re-runs. --force from the
+    // flag or the "start over" reentrant branch is the only way we rewrite.
     return {
       applied: false,
       summary: `skill.md preserved (already at ${ctx.layout.skillMd})`,
     };
   }
-  const content = buildSkillMd(TEMPLATE_FRONTMATTER, TEMPLATE_BODY);
-  writeFileSync(ctx.layout.skillMd, content, { mode: 0o644, encoding: "utf-8" });
+  const { frontmatter, body } = buildTemplate(ctx);
+  const content = buildSkillMd(frontmatter, body);
+  writeFileSync(ctx.layout.skillMd, content, {
+    mode: 0o644,
+    encoding: "utf-8",
+  });
   ctx.config.skillMdPath = ctx.layout.skillMd;
-  return { applied: true, summary: `wrote skill template to ${ctx.layout.skillMd}` };
+  return {
+    applied: true,
+    summary: `wrote publish-ready skill.md to ${ctx.layout.skillMd}`,
+  };
+}
+
+function buildTemplate(ctx: StepContext): {
+  frontmatter: SkillFrontmatter;
+  body: string;
+} {
+  const selfUrl = stripTrailing(
+    ctx.config.selfUrl ?? "https://acc.example.com",
+  );
+  const { name, skillId, websiteUrl } = deriveIdentity(selfUrl);
+  const platform = ctx.platform;
+  const supportedPayments = defaultPaymentsFor(platform);
+
+  // Categories come from step 9 (merchant multi-select against the
+  // siliconretail.com taxonomy). Fall back to ["Digital"] only when the
+  // wizard reached this step without step 9 having run (shouldn't happen
+  // in the normal flow, but keeps the skill-spec non-empty invariant).
+  const categories =
+    ctx.categories && ctx.categories.length > 0
+      ? [...ctx.categories]
+      : ["Digital"];
+
+  const frontmatter: SkillFrontmatter = {
+    name,
+    // Intentionally generic — the marketplace-visible description is one
+    // of the few fields we recommend the merchant customize. Keeping it
+    // honest ("Shopify storefront exposed via ACC UCP/1.0") means the
+    // auto-published version is factually correct; editing it later is a
+    // refinement, not a correctness fix.
+    description: `${capitalize(platform)} storefront exposed as an agentic-commerce endpoint via ACC UCP/1.0.`,
+    skill_id: skillId,
+    categories,
+    supported_platforms: [platform],
+    supported_payments: supportedPayments,
+    health_url: `${selfUrl}/health`,
+    tags: [platform, "ucp"],
+    website_url: websiteUrl,
+  };
+
+  const body =
+    `# ${name}\n` +
+    `\n` +
+    `Agentic-commerce endpoint for a ${capitalize(platform)} merchant, exposed via\n` +
+    `the [Agentic Commerce Connector](https://github.com/SELFVIBECODING/Agentic-Commerce-Connector)\n` +
+    `as a [UCP/1.0](https://ucp.dev) surface. Agents can discover, search,\n` +
+    `and transact directly against this endpoint without any intermediary.\n` +
+    `\n` +
+    `## Endpoints\n` +
+    `\n` +
+    `- **Discovery:** \`${selfUrl}/ucp/v1/discovery\`\n` +
+    `- **Catalog search:** \`${selfUrl}/ucp/v1/search\`\n` +
+    `- **Checkout:** \`${selfUrl}/ucp/v1/checkout-sessions\`\n` +
+    `- **Order status:** \`${selfUrl}/ucp/v1/orders/{id}\`\n` +
+    `- **Skill file:** \`${selfUrl}/.well-known/acc-skill.md\` (this document)\n` +
+    `- **Health:** \`${selfUrl}/health\`\n` +
+    `\n` +
+    `## Customize (optional)\n` +
+    `\n` +
+    `This file was auto-generated by \`acc init ${platform}\` and is ready to\n` +
+    `publish as-is. To polish it before the next \`acc publish\`, edit the\n` +
+    `frontmatter above:\n` +
+    `\n` +
+    `- \`description\` — one-line pitch a buyer's agent shows before browsing\n` +
+    `- \`categories\` — pick from the marketplace taxonomy (e.g. apparel, electronics)\n` +
+    `- \`tags\` — free-form discovery hints\n` +
+    `- \`website_url\` — your customer-facing storefront (not the connector)\n` +
+    `\n` +
+    `## Support\n` +
+    `\n` +
+    `Contact the merchant operator of this connector. Agents should route\n` +
+    `operational issues to the human-readable contact surfaced by UCP\n` +
+    `discovery above.\n`;
+
+  return { frontmatter, body };
+}
+
+/**
+ * Derive a stable identity trio — display name, skill_id, and website_url
+ * — from the connector's public URL. We deliberately avoid hitting the
+ * network here (init runs offline); the post-install step can later
+ * enrich the template with Shopify-sourced metadata.
+ *
+ * `acc.myshop.com` → { name: "Myshop", skillId: "myshop-acc",
+ *                      websiteUrl: "https://myshop.com" }
+ *
+ * Stable across re-runs: the same SELF_URL always yields the same trio.
+ */
+function deriveIdentity(selfUrl: string): {
+  name: string;
+  skillId: string;
+  websiteUrl: string;
+} {
+  let host = "";
+  try {
+    host = new URL(selfUrl).host;
+  } catch {
+    host = "store";
+  }
+  // Strip port + conventional connector-subdomain labels, keeping the
+  // meaningful part of the hostname as the merchant identity.
+  const labels = host
+    .replace(/:\d+$/, "")
+    .split(".")
+    .filter(
+      (l) =>
+        l.length > 0 && l.toLowerCase() !== "acc" && l.toLowerCase() !== "www",
+    );
+  // Drop the TLD for display; keep it for the derived website URL so
+  // `myshop.com` remains a plausible landing page.
+  const displayLabels = labels.length > 1 ? labels.slice(0, -1) : labels;
+  const core = displayLabels.join("-").toLowerCase() || "store";
+
+  return {
+    name: titleCase(core.replace(/[-_]+/g, " ")),
+    skillId: `${core}-acc`,
+    websiteUrl: labels.length > 0 ? `https://${labels.join(".")}` : selfUrl,
+  };
+}
+
+function defaultPaymentsFor(_platform: string): string[] {
+  // Phase 1 ships without any payment rail wired end-to-end. Step 6 of
+  // the wizard records the merchant's selection (currently only "none"
+  // is available); we reflect that here with an empty array so the
+  // published skill frontmatter advertises no payment support. When
+  // rails get wired (Nexus/PlatON, Stripe, x402, …) this helper grows
+  // a platform- and provider-aware branch, and the step writes the
+  // selected IDs back through ctx.config for us to read.
+  return [];
+}
+
+function stripTrailing(url: string): string {
+  return url.replace(/\/+$/, "");
+}
+
+function titleCase(s: string): string {
+  return s
+    .split(/\s+/)
+    .filter((w) => w.length > 0)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function capitalize(s: string): string {
+  if (s.length === 0) return s;
+  return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
 }

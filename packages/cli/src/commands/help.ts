@@ -4,9 +4,14 @@ Usage:
   acc <command> [subcommand] [flags]
 
 Setup:
-  acc init [--data-dir=./acc-data] [--non-interactive]
-      Interactive wizard: provisions acc-data/, generates keys, collects
-      Shopify Partners creds, writes .env + config.json.
+  acc init [<platform>] [--data-dir=./acc-data]
+      Interactive wizard. Runs a platform-specific setup:
+        acc init shopify    → Shopify Partners OAuth flow
+        acc init            → pick platform from a menu
+      Provisions acc-data/, generates keys, collects platform-specific
+      credentials, writes .env + config.json.
+
+  Planned platforms: woocommerce, magento (not yet available).
 
 Shopify:
   acc shopify connect --shop=<X>.myshopify.com [--print-url-only]

@@ -2,9 +2,11 @@
 // which closes the at-most-once gap flagged in the security audit: a
 // `payment.escrowed` replay after a pod bounce no longer triggers a
 // second settlement call.
+//
+// Uses the openSqlite abstraction so the same code path runs under Bun's
+// compiled binary (via bun:sqlite) and under Node (via better-sqlite3).
 
-import Database from "better-sqlite3";
-import type { Database as SqliteDb } from "better-sqlite3";
+import { openSqlite, type SqliteDatabase } from "../db/sqlite.js";
 import type { ProcessedEventStore } from "./store.js";
 
 const SCHEMA_SQL = `
@@ -26,10 +28,10 @@ export interface SqliteProcessedEventStore extends ProcessedEventStore {
   close(): void;
 }
 
-export function createSqliteProcessedEventStore(
+export async function createSqliteProcessedEventStore(
   opts: SqliteProcessedEventStoreOptions,
-): SqliteProcessedEventStore {
-  const db: SqliteDb = new Database(opts.dbPath);
+): Promise<SqliteProcessedEventStore> {
+  const db: SqliteDatabase = await openSqlite(opts.dbPath);
   db.pragma("journal_mode = WAL");
   db.exec(SCHEMA_SQL);
 
@@ -50,13 +52,14 @@ export function createSqliteProcessedEventStore(
 
   return {
     async has(eventId: string): Promise<boolean> {
-      return hasStmt.get(eventId) !== undefined;
+      const row = hasStmt.get([eventId]);
+      return row !== undefined && row !== null;
     },
     async add(eventId: string, receivedAt: number): Promise<void> {
-      addStmt.run(eventId, receivedAt);
+      addStmt.run([eventId, receivedAt]);
     },
     async prune(olderThanMs: number, now: number): Promise<void> {
-      pruneStmt.run(now - olderThanMs);
+      pruneStmt.run([now - olderThanMs]);
     },
     close(): void {
       if (closed) return;

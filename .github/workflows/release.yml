@@ -1,0 +1,123 @@
+name: release
+
+# Build the compiled `acc` binary for every supported platform and attach the
+# tarballs to the corresponding GitHub Release. Bun's `--compile` supports
+# cross-architecture builds from a single host, but we split into one job
+# per target so a single cross-compile failure doesn't take down the matrix.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.4.0). Creates the release if it doesn't exist."
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Both darwin targets on the same macos-14 (arm64) runner. Bun
+          # cross-compiles x64-from-arm64 fine, and ldid signs either arch.
+          - { target: darwin-arm64, runner: macos-14 }
+          - { target: darwin-x64,   runner: macos-14 }
+          - { target: linux-x64,    runner: ubuntu-latest }
+          - { target: linux-arm64,  runner: ubuntu-latest }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node (for workspace install)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install workspace deps
+        run: npm install --no-audit --no-fund
+
+      - name: Build workspace TypeScript
+        run: npm run build
+
+      - name: Compile binary (${{ matrix.target }})
+        run: bun run scripts/build-binary.ts ${{ matrix.target }}
+
+      - name: Ad-hoc sign with ldid (macOS only)
+        # Bun's `--compile` does NOT auto-sign its output, and Apple's
+        # `codesign` refuses to sign it post-hoc because Bun appends the
+        # bundle payload after the Mach-O's normal end — `codesign`'s
+        # load-command walk errors with "invalid or unsupported format".
+        # `ldid` is tolerant of that layout and produces an ad-hoc signature
+        # Apple Silicon's amfid accepts. Without this step, the compiled
+        # binary gets SIGKILL'd on first run on arm64 macOS.
+        if: startsWith(matrix.target, 'darwin-')
+        run: |
+          brew install ldid
+          ldid -S "dist/binaries/acc-${{ matrix.target }}"
+          codesign -dvv "dist/binaries/acc-${{ matrix.target }}" 2>&1 | head -4
+
+      - name: Package tarball
+        run: |
+          cd dist/binaries
+          mv "acc-${{ matrix.target }}" acc
+          chmod +x acc
+          tar -czf "acc-${{ matrix.target }}.tar.gz" acc
+          rm acc
+          ls -la
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: acc-${{ matrix.target }}
+          path: dist/binaries/acc-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/artifacts
+          merge-multiple: true
+
+      - name: Compute checksums
+        run: |
+          cd dist/artifacts
+          sha256sum acc-*.tar.gz | tee checksums.txt
+
+      - name: Resolve release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            dist/artifacts/acc-*.tar.gz
+            dist/artifacts/checksums.txt

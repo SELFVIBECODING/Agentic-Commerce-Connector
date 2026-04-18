@@ -34,19 +34,33 @@ acc shopify status | disconnect
 
 ## `acc init`
 
-8-step interactive wizard. Provisions `acc-data/` with sane defaults and
+10-step interactive wizard. Provisions `acc-data/` with sane defaults and
 writes `.env` + `config.json` atomically.
 
 ```bash
-npx acc init
+acc init shopify         # explicit platform
+acc init                 # pick platform from a menu
 ```
+
+Steps (Shopify platform):
+
+1. Preflight
+2. Data directory
+3. Public URL
+4. Encryption key
+5. Marketplace signer
+6. **Payment methods** — asks which rails your storefront accepts. Phase 1 offers only **"No payment methods yet"**; writes `PAYMENT_PROVIDER=none` to `.env`. Nexus/PlatON, Stripe, x402 arrive later.
+7. Shopify Partners creds
+8. SQLite migration
+9. **Categories (multi-select)** — Fashion, Electronics, Books, Home, Food, Services, Digital, Travel. Comma-separated letters.
+10. Skill template (auto-served at `${SELF_URL}/.well-known/acc-skill.md`)
 
 Re-running detects an existing `config.json` and offers:
 
 | Key | Action |
 |---|---|
 | `a` | Keep as-is and exit |
-| `b` | Update Shopify credentials only (skip to step 6) |
+| `b` | Update Shopify credentials only (skip to step 7) |
 | `c` | Start over (backs up old config to `config.json.bak`) |
 | `d` | Cancel |
 

@@ -1,0 +1,109 @@
+// ---------------------------------------------------------------------------
+// `acc start` — boot the connector in-process.
+//
+// Loads acc-data/.env into process.env (overriding nothing that's already
+// exported), sets TRANSPORT=http so the UCP/REST/MCP surfaces come up, then
+// calls the exported startServer() — no subprocess, one PID.
+// ---------------------------------------------------------------------------
+
+import { readFileSync, existsSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { resolveDataDir } from "../shared/data-dir.js";
+import { createUi } from "../shared/ui.js";
+
+export async function runStart(args: readonly string[]): Promise<void> {
+  const flags = parseFlags(args);
+  const dataDirArg = flags.get("data-dir") ?? defaultDataDir();
+  const layout = resolveDataDir(dataDirArg);
+
+  if (!layout.alreadyInitialised) {
+    process.stderr.write(
+      `acc: no config at ${layout.configPath}\n` +
+        `     run 'acc init --data-dir=${dataDirArg}' first.\n`,
+    );
+    process.exit(2);
+  }
+
+  loadEnvFile(layout.envPath);
+
+  // Default: HTTP transport unless caller explicitly picked stdio.
+  if (!process.env.TRANSPORT) process.env.TRANSPORT = "http";
+  // Point the OAuth installation store at the data dir.
+  if (!process.env.ACC_DATA_DIR) process.env.ACC_DATA_DIR = layout.root;
+
+  const ui = createUi();
+  ui.line(`\n  ${ui.s.magenta("▲")}  ${ui.s.bold("Booting ACC connector…")}\n`);
+
+  const { startServer } = await import("@acc/connector/server");
+  await startServer();
+
+  const selfUrl = (process.env.SELF_URL ?? "").replace(/\/+$/, "") ||
+    `http://localhost:${process.env.PORTAL_PORT ?? "10000"}`;
+  const port = process.env.PORTAL_PORT ?? "10000";
+
+  ui.separator();
+  ui.line(`  ${ui.s.green("●")}  ${ui.s.bold(ui.s.green("ACC is running"))}`);
+  ui.line("");
+  ui.line(`     ${ui.s.dim("listen on")}  127.0.0.1:${port}`);
+  ui.line(`     ${ui.s.dim("public")}     ${selfUrl}`);
+  ui.line(`     ${ui.s.dim("UCP")}        ${selfUrl}/ucp/v1/discovery`);
+  ui.line(`     ${ui.s.dim("skill")}      ${selfUrl}/.well-known/acc-skill.md`);
+  ui.line("");
+  ui.line(`     ${ui.s.dim("Press Ctrl+C to stop.")}`);
+  ui.separator();
+
+  // Block until SIGINT/SIGTERM. Bun's compiled runtime drains the event
+  // loop once top-level async settles even while an HTTP server is
+  // listening; hanging on a signal-terminated Promise keeps the process
+  // alive. Under Node the listening socket would already pin the loop,
+  // so this is harmless there.
+  await new Promise<void>((resolvePromise) => {
+    const stop = (sig: string) => {
+      ui.line("");
+      ui.line(`  ${ui.s.yellow("■")}  ${ui.s.dim(`${sig} received — shutting down…`)}`);
+      resolvePromise();
+    };
+    process.once("SIGINT", () => stop("SIGINT"));
+    process.once("SIGTERM", () => stop("SIGTERM"));
+  });
+}
+
+function parseFlags(args: readonly string[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const arg of args) {
+    if (!arg.startsWith("--")) continue;
+    const [k, v] = arg.slice(2).split("=", 2);
+    if (k) map.set(k, v ?? "true");
+  }
+  return map;
+}
+
+function defaultDataDir(): string {
+  // Prefer ~/.acc (convention for single-user binary installs); fall back
+  // to ./acc-data if the user is running from a checked-out repo.
+  const home = process.env.HOME || process.env.USERPROFILE;
+  if (home) {
+    const global = join(home, ".acc");
+    if (existsSync(join(global, "config.json"))) return global;
+  }
+  return resolve("./acc-data");
+}
+
+function loadEnvFile(path: string): void {
+  if (!existsSync(path)) return;
+  const text = readFileSync(path, "utf8");
+  for (const line of text.split(/\r?\n/)) {
+    const m = line.match(/^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*)$/);
+    if (!m) continue;
+    const [, key, rawValue] = m;
+    if (!key || process.env[key] !== undefined) continue;
+    let value = rawValue ?? "";
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    process.env[key] = value;
+  }
+}

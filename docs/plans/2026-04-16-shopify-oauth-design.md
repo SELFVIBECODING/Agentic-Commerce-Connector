@@ -332,7 +332,7 @@ We (the ACC project) register one public App in a project-owned Partners account
 
 ### Shape C' — fully-hosted ACC (SaaS)
 
-We host multi-tenant ACC on `xagenpay.com` (or similar). Merchants never deploy anything; they enter shop + wallet on a web form, click install, and get a slug-routed MCP endpoint (`xagenpay.com/mcp/{slug}`). Reinstall idempotency on `shop_domain` primary key preserves slug/DID/order history.
+We host multi-tenant ACC on a dedicated SaaS domain. Merchants never deploy anything; they enter shop + wallet on a web form, click install, and get a slug-routed MCP endpoint (`<host>/mcp/{slug}`). Reinstall idempotency on `shop_domain` primary key preserves slug/DID/order history.
 
 **Why it's deferred:**
 - Orthogonal product. Strategy says self-host-first; C' is the opposite stance.

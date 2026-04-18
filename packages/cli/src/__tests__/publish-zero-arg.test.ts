@@ -43,7 +43,9 @@ describe("publish zero-arg mode", () => {
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "acc-pub-"));
-    stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
     fetchSpy = vi.fn().mockResolvedValue({
       status: 200,
       json: async () => ({ ok: true, data: {} }),
@@ -87,5 +89,23 @@ describe("publish zero-arg mode", () => {
 
   it("errors out if config.json is missing and no flags provided", async () => {
     await expect(runPublish([])).rejects.toThrow(/acc init/);
+  });
+
+  it("errors out with an actionable message if skill.md is missing", async () => {
+    const layout = ensureDataDir(join(tmp, "acc-data"));
+    // Config + signer exist, but no skill.md at skillMdPath.
+    saveConfig(layout.configPath, {
+      ...SEED_CONFIG,
+      skillMdPath: layout.skillMd,
+    });
+    const pk = generatePrivateKey();
+    await importWallet({ dataDir: layout.root, privateKey: pk });
+
+    await expect(runPublish([])).rejects.toThrow(
+      /skill file not found.*acc init shopify/s,
+    );
+    // No network call should have been made — publish must abort before
+    // submitting anything when the file is missing.
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

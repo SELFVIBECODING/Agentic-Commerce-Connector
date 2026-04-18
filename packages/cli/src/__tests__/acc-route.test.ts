@@ -3,7 +3,8 @@ import { route } from "../acc-route.js";
 
 function ok(argv: string[]) {
   const r = route(argv);
-  if ("error" in r) throw new Error(`expected route OK but got error: ${r.error}`);
+  if ("error" in r)
+    throw new Error(`expected route OK but got error: ${r.error}`);
   return r;
 }
 
@@ -75,14 +76,22 @@ describe("route — nested wallet", () => {
   });
 });
 
+describe("route — top-level lifecycle commands", () => {
+  it.each([
+    ["start", "start"],
+    ["upgrade", "upgrade"],
+    ["doctor", "doctor"],
+  ])("routes `%s` to its handler", (cmd, handler) => {
+    const r = ok([cmd]);
+    expect(r.handler).toBe(handler);
+  });
+});
+
 describe("route — placeholders", () => {
-  it.each(["start", "stop", "status", "doctor"])(
-    "surfaces placeholder for `%s`",
-    (cmd) => {
-      const r = ok([cmd]);
-      expect(r.handler).toBe("placeholder");
-    },
-  );
+  it.each(["stop", "status"])("surfaces placeholder for `%s`", (cmd) => {
+    const r = ok([cmd]);
+    expect(r.handler).toBe("placeholder");
+  });
 });
 
 describe("route — errors", () => {

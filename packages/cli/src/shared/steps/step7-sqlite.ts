@@ -6,9 +6,13 @@
 // Both files use CREATE TABLE IF NOT EXISTS, so schema skew is detected at
 // runtime via column-mismatch errors. Phase 9 `acc doctor` can add an
 // automated drift check; for now, a manual keep-in-sync comment is enough.
+//
+// The `token_expires_at` / `refresh_token` columns are Phase 2 additions
+// (relay-refresh flow) — present in the schema for forward-compat but
+// always NULL on rows written by the Phase 1 per-merchant Partners flow.
 // ---------------------------------------------------------------------------
 
-import Database from "better-sqlite3";
+import { openSqlite } from "@acc/connector/sqlite";
 import type { StepContext, StepOutcome } from "./context.js";
 
 const SCHEMA_SQL = `
@@ -19,16 +23,33 @@ CREATE TABLE IF NOT EXISTS shopify_installations (
   scopes          TEXT NOT NULL,
   installed_at    INTEGER NOT NULL,
   uninstalled_at  INTEGER,
-  key_version     INTEGER NOT NULL DEFAULT 1
+  key_version     INTEGER NOT NULL DEFAULT 1,
+  token_expires_at INTEGER,
+  refresh_token   TEXT
 );
 `;
 
 export async function stepSqlite(ctx: StepContext): Promise<StepOutcome> {
-  const db = new Database(ctx.layout.dbFile);
+  const db = await openSqlite(ctx.layout.dbFile);
   try {
     db.pragma("journal_mode = WAL");
     db.pragma("foreign_keys = ON");
     db.exec(SCHEMA_SQL);
+    // Idempotent migration for DBs created by pre-v2 schema.
+    const cols = db
+      .prepare("PRAGMA table_info(shopify_installations)")
+      .all() as Array<{ readonly name: string }>;
+    const names = new Set(cols.map((c) => c.name));
+    if (!names.has("token_expires_at")) {
+      db.exec(
+        "ALTER TABLE shopify_installations ADD COLUMN token_expires_at INTEGER",
+      );
+    }
+    if (!names.has("refresh_token")) {
+      db.exec(
+        "ALTER TABLE shopify_installations ADD COLUMN refresh_token TEXT",
+      );
+    }
   } finally {
     db.close();
   }
