@@ -66,7 +66,7 @@ VPS behind Caddy/nginx, or Cloudflare Tunnel — anything that serves HTTPS).
 ### 1. Install the binary
 
 ```bash
-curl -fsSL https://www.siliconretail.com/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/SELFVIBECODING/Agentic-Commerce-Connector/main/install.sh | sh
 ```
 
 Installs `acc` into `~/.acc/bin/`. Zero dependencies — no Node, no git,
@@ -120,7 +120,7 @@ sets up the system user, binary, reverse proxy (nginx or Caddy), TLS via
 Let's Encrypt, systemd unit, and runs the wizard — in one shot:
 
 ```bash
-curl -fsSL https://www.siliconretail.com/install-server.sh | \
+curl -fsSL https://raw.githubusercontent.com/SELFVIBECODING/Agentic-Commerce-Connector/main/deploy/scripts/install-server.sh | \
   ACC_PUBLIC_HOSTNAME=acc.mystore.com sudo bash
 ```
 

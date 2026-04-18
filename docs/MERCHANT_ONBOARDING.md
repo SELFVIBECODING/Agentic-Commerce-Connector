@@ -40,7 +40,7 @@ Two paths, pick whichever matches your infra:
 **Path A — Binary install on any host with public HTTPS (recommended):**
 
 ```bash
-curl -fsSL https://www.siliconretail.com/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/SELFVIBECODING/Agentic-Commerce-Connector/main/install.sh | sh
 ```
 
 Installs `acc` to `~/.acc/bin/`. Zero deps. You're responsible for
@@ -49,7 +49,7 @@ putting a public HTTPS reverse proxy in front of port 10000.
 **Path B — One-command VPS deploy (fresh Debian/Ubuntu box):**
 
 ```bash
-curl -fsSL https://www.siliconretail.com/install-server.sh | \
+curl -fsSL https://raw.githubusercontent.com/SELFVIBECODING/Agentic-Commerce-Connector/main/deploy/scripts/install-server.sh | \
   ACC_PUBLIC_HOSTNAME=acc.myshop.com sudo bash
 ```
 
