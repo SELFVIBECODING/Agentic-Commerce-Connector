@@ -12,6 +12,13 @@ import type { ShippingAddress, WebhookPayload } from "./types.js";
 import { handleUcpRoute, type UcpDeps } from "./ucp/routes.js";
 import type { ShopifyOAuthRouter } from "./adapters/shopify/oauth/routes.js";
 import type { ShopifyWebhookRouter } from "./adapters/shopify/oauth/webhook-handler.js";
+import {
+  applySecurityHeaders,
+  BodyTooLargeError,
+  MAX_BODY_JSON_API,
+  MAX_BODY_WEBHOOK,
+  readBody as readBodyShared,
+} from "./http-utils.js";
 
 const AGENT_NAME = "Commerce Agent";
 const startedAt = Date.now();
@@ -101,16 +108,46 @@ export function registerShopifyWebhookRouter(
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+// Read-only routes where a permissive CORS policy is deliberate (discovery,
+// skill manifests, public catalog JSON). State-changing routes and the admin
+// surface MUST be left out of this allow-list: wildcard CORS combined with
+// bearer auth would let any third-party origin initiate a request on behalf
+// of a logged-in operator or cart holder.
+const PUBLIC_READ_PREFIXES = [
+  "/skill.md",
+  "/.well-known/acc-skill.md",
+  "/health",
+  "/api/info",
+  "/api/v1/products",
+  "/ucp/v1/discovery",
+];
+
+function isPublicReadPath(path: string): boolean {
+  return PUBLIC_READ_PREFIXES.some(
+    (p) => path === p || path.startsWith(p + "/"),
+  );
+}
+
+function applyCorsForPath(res: ServerResponse, path: string): void {
+  if (isPublicReadPath(path)) {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  }
+}
+
+function reqPath(res: ServerResponse): string {
+  const existing = (res as ServerResponse & { __accPath?: string }).__accPath;
+  return typeof existing === "string" ? existing : "";
+}
+
 export function sendJson(
   res: ServerResponse,
   status: number,
   data: unknown,
 ): void {
   const body = JSON.stringify(data, null, 2);
-  res.writeHead(status, {
-    "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": "*",
-  });
+  applySecurityHeaders(res);
+  applyCorsForPath(res, reqPath(res));
+  res.writeHead(status, { "Content-Type": "application/json" });
   res.end(body);
 }
 
@@ -119,14 +156,14 @@ function sendText(
   text: string,
   contentType: string,
 ): void {
-  res.writeHead(200, {
-    "Content-Type": contentType,
-    "Access-Control-Allow-Origin": "*",
-  });
+  applySecurityHeaders(res);
+  applyCorsForPath(res, reqPath(res));
+  res.writeHead(200, { "Content-Type": contentType });
   res.end(text);
 }
 
 function sendHtml(res: ServerResponse, html: string): void {
+  applySecurityHeaders(res);
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   res.end(html);
 }
@@ -149,13 +186,11 @@ function formatUptime(ms: number): string {
   return `${h}h ${m}m ${s}s`;
 }
 
-export function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
-    req.on("error", reject);
-  });
+export function readBody(
+  req: IncomingMessage,
+  maxBytes: number = MAX_BODY_JSON_API,
+): Promise<string> {
+  return readBodyShared(req, maxBytes);
 }
 
 // ── API handlers ────────────────────────────────────────────────────────────
@@ -345,6 +380,14 @@ async function handleRestRoute(
 
     return false;
   } catch (err: unknown) {
+    if (err instanceof BodyTooLargeError) {
+      sendJson(res, 413, {
+        ok: false,
+        error: "payload_too_large",
+        limit: MAX_BODY_JSON_API,
+      });
+      return true;
+    }
     const message = err instanceof Error ? err.message : String(err);
     sendJson(res, 500, { ok: false, error: message });
     return true;
@@ -363,14 +406,23 @@ async function handleRequest(
     `http://${req.headers.host ?? "localhost"}`,
   );
   const path = url.pathname;
+  // Stash the path on the response so sendJson/sendText can make a
+  // per-path CORS decision without an extra parameter threaded through
+  // every call site.
+  (res as ServerResponse & { __accPath?: string }).__accPath = path;
 
-  // CORS preflight
+  applySecurityHeaders(res);
+
+  // CORS preflight — permissive only for the public read allow-list.
   if (req.method === "OPTIONS") {
-    res.writeHead(204, {
-      "Access-Control-Allow-Origin": "*",
+    const headers: Record<string, string> = {
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    });
+    };
+    if (isPublicReadPath(path)) {
+      headers["Access-Control-Allow-Origin"] = "*";
+    }
+    res.writeHead(204, headers);
     res.end();
     return;
   }
@@ -459,10 +511,13 @@ async function handleRequest(
   if (path === "/.well-known/acc-skill.md" && req.method === "GET") {
     try {
       const bytes = readFileSync(config.accSkillMdPath);
+      applySecurityHeaders(res);
+      // Public, read-only marketplace skill — wildcard CORS is deliberate
+      // so any agent can fetch it cross-origin.
+      res.setHeader("Access-Control-Allow-Origin", "*");
       res.writeHead(200, {
         "Content-Type": "text/markdown; charset=utf-8",
         "Content-Length": String(bytes.length),
-        "Access-Control-Allow-Origin": "*",
       });
       res.end(bytes);
     } catch {
@@ -486,7 +541,19 @@ async function handleRequest(
       sendJson(res, 503, { error: "Webhook handler not registered" });
       return;
     }
-    const rawBody = await readBody(req);
+    let rawBody: string;
+    try {
+      rawBody = await readBody(req, MAX_BODY_WEBHOOK);
+    } catch (err) {
+      if (err instanceof BodyTooLargeError) {
+        sendJson(res, 413, {
+          error: "payload_too_large",
+          limit: MAX_BODY_WEBHOOK,
+        });
+        return;
+      }
+      throw err;
+    }
     const sig = req.headers["x-nexus-signature"] as string | undefined;
     const ts = req.headers["x-nexus-timestamp"] as string | undefined;
     try {

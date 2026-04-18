@@ -5,6 +5,8 @@
 // e-commerce backend or which payment protocol is in use.
 // ---------------------------------------------------------------------------
 
+import { resolve, sep } from "node:path";
+
 export interface BaseConfig {
   /** DID-style merchant identifier surfaced to payment handlers and webhooks. */
   readonly merchantDid: string;
@@ -62,6 +64,8 @@ export function loadBaseConfig(
   env: Record<string, string | undefined>,
   storeUrl: string,
 ): BaseConfig {
+  const dataDir = env.ACC_DATA_DIR ?? "./acc-data";
+  const skillMdRaw = env.ACC_SKILL_MD_PATH ?? `${dataDir}/skill/acc-skill.md`;
   return {
     merchantDid: env.MERCHANT_DID ?? "did:example:unknown-merchant",
     portalPort: parsePort(env.PORTAL_PORT, 10000),
@@ -73,8 +77,34 @@ export function loadBaseConfig(
     rateLockMinutes: parseInt(env.CHECKOUT_RATE_LOCK_MINUTES ?? "5", 10),
     storeUrl,
     accEncryptionKey: env.ACC_ENCRYPTION_KEY ?? "",
-    accSkillMdPath:
-      env.ACC_SKILL_MD_PATH ??
-      `${env.ACC_DATA_DIR ?? "./acc-data"}/skill/acc-skill.md`,
+    accSkillMdPath: resolveSkillMdPath(skillMdRaw, dataDir),
   };
+}
+
+/**
+ * Resolve and constrain `ACC_SKILL_MD_PATH` to live inside `ACC_DATA_DIR`.
+ *
+ * The connector serves whatever path the config points at via the
+ * `/.well-known/acc-skill.md` route. Without this guard, a mis-set env var
+ * (e.g. from a leaked deployment template) could make that public endpoint
+ * serve `/etc/passwd` or any other file the process can read — a path-
+ * traversal sink reachable without auth. We therefore refuse to load a
+ * config whose skill path escapes the data directory.
+ *
+ * Containment check uses a trailing `sep` so that a sibling directory whose
+ * name starts with the data-dir basename (e.g. `/data-evil` vs `/data`)
+ * can't pass a naive `startsWith`.
+ */
+function resolveSkillMdPath(rawPath: string, dataDir: string): string {
+  const resolvedPath = resolve(rawPath);
+  const resolvedDir = resolve(dataDir);
+  const dirWithSep = resolvedDir.endsWith(sep)
+    ? resolvedDir
+    : resolvedDir + sep;
+  if (!resolvedPath.startsWith(dirWithSep) && resolvedPath !== resolvedDir) {
+    throw new Error(
+      `ACC_SKILL_MD_PATH (${rawPath}) must resolve under ACC_DATA_DIR (${dataDir}).`,
+    );
+  }
+  return resolvedPath;
 }

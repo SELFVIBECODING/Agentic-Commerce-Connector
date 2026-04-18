@@ -5,6 +5,11 @@ import { updateOrderStatus } from "./order-store.js";
 import { findSessionByOrderRef, updateSession } from "./db/session-repo.js";
 import { handlePaymentCompleted } from "./order-writeback.js";
 import type { MerchantAdapter } from "../adapters/types.js";
+import {
+  DEFAULT_EVENT_TTL_MS,
+  type ProcessedEventStore,
+} from "./processed-events/store.js";
+import { createMemoryProcessedEventStore } from "./processed-events/memory-store.js";
 
 // ---------------------------------------------------------------------------
 // Settlement request — fire-and-forget call to nexus-core
@@ -42,14 +47,20 @@ export async function requestSettlement(
 // ---------------------------------------------------------------------------
 
 const MAX_TIMESTAMP_DRIFT_S = 300;
-const processedEvents = new Map<string, number>();
-const EVENT_TTL_MS = 3_600_000;
+const EVENT_TTL_MS = DEFAULT_EVENT_TTL_MS;
 
-function pruneProcessedEvents(): void {
-  const now = Date.now();
-  for (const [id, ts] of processedEvents) {
-    if (now - ts > EVENT_TTL_MS) processedEvents.delete(id);
-  }
+// Default in-memory store — used when a caller doesn't inject one via
+// WebhookConfig. Kept process-local for test isolation; production
+// deployments inject the SQLite-backed store from server.ts bootstrap.
+let defaultStore: ProcessedEventStore | null = null;
+function getDefaultStore(): ProcessedEventStore {
+  if (!defaultStore) defaultStore = createMemoryProcessedEventStore();
+  return defaultStore;
+}
+
+/** Exposed for tests that need a clean slate. */
+export function resetDefaultProcessedEventStore(): void {
+  defaultStore = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +136,14 @@ export interface WebhookConfig {
   readonly nexusCoreUrl: string;
   readonly merchantDid: string;
   readonly merchant?: MerchantAdapter;
+  /**
+   * Idempotency store for processed event IDs. When omitted, a process-local
+   * in-memory store is used — sufficient for dev/tests but lost on restart.
+   * Production deployments inject a persistent store (SQLite or Postgres)
+   * so `payment.escrowed` replays after a pod bounce don't retrigger
+   * settlement.
+   */
+  readonly processedEvents?: ProcessedEventStore;
 }
 
 export async function handleWebhookEvent(
@@ -133,10 +152,12 @@ export async function handleWebhookEvent(
 ): Promise<WebhookHandleResult> {
   const { event_id, event_type, data } = payload;
 
-  pruneProcessedEvents();
+  const events = webhookConfig.processedEvents ?? getDefaultStore();
+  const now = Date.now();
+  await events.prune(EVENT_TTL_MS, now);
 
   // Idempotency check
-  if (processedEvents.has(event_id)) {
+  if (await events.has(event_id)) {
     return { accepted: true, action: "duplicate_ignored" };
   }
 
@@ -144,7 +165,7 @@ export async function handleWebhookEvent(
 
   if (newStatus) {
     const updated = await updateOrderStatus(data.merchant_order_ref, newStatus);
-    processedEvents.set(event_id, Date.now());
+    await events.add(event_id, now);
 
     if (updated) {
       console.error(
@@ -214,7 +235,7 @@ export async function handleWebhookEvent(
     return { accepted: true, action: "order_not_found" };
   }
 
-  processedEvents.set(event_id, Date.now());
+  await events.add(event_id, now);
   console.error(`[Webhook] ${event_type}: acknowledged (no status change)`);
   return { accepted: true, action: "acknowledged" };
 }

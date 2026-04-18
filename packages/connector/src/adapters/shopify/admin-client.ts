@@ -111,14 +111,38 @@ export function createShopifyMerchant(
       throw new Error("SHOPIFY_ADMIN_TOKEN is required for order writeback");
     }
 
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Shopify-Access-Token": shopifyConfig.adminToken,
-      },
-      body: JSON.stringify({ query, variables }),
-    });
+    // Same timeout pattern as the Storefront client: without this the order
+    // writeback path can hang waiting on a slow Admin API response.
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(),
+      shopifyConfig.requestTimeoutMs,
+    );
+
+    let res: Response;
+    try {
+      res = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shopify-Access-Token": shopifyConfig.adminToken,
+        },
+        body: JSON.stringify({ query, variables }),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if (
+        err instanceof Error &&
+        (err.name === "AbortError" || err.name === "TimeoutError")
+      ) {
+        throw new Error(
+          `Admin API timeout after ${shopifyConfig.requestTimeoutMs}ms`,
+        );
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
 
     if (!res.ok) {
       const text = await res.text();

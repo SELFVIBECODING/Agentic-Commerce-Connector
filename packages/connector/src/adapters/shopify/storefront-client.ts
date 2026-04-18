@@ -196,14 +196,39 @@ export function createShopifyCatalog(
     query: string,
     variables: Record<string, unknown> = {},
   ): Promise<T> {
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Shopify-Storefront-Access-Token": shopifyConfig.storefrontToken,
-      },
-      body: JSON.stringify({ query, variables }),
-    });
+    // Without this AbortController the checkout path can hang indefinitely
+    // on a slow or unreachable Shopify edge — the WooCommerce http helper
+    // already follows this pattern. See SHOPIFY_REQUEST_TIMEOUT_MS.
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(),
+      shopifyConfig.requestTimeoutMs,
+    );
+
+    let res: Response;
+    try {
+      res = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shopify-Storefront-Access-Token": shopifyConfig.storefrontToken,
+        },
+        body: JSON.stringify({ query, variables }),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if (
+        err instanceof Error &&
+        (err.name === "AbortError" || err.name === "TimeoutError")
+      ) {
+        throw new Error(
+          `Storefront API timeout after ${shopifyConfig.requestTimeoutMs}ms`,
+        );
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
 
     if (!res.ok) {
       const text = await res.text();

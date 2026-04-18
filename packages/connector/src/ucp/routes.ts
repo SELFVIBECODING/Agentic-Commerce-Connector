@@ -22,7 +22,10 @@ import {
   createCheckoutSession,
   getCheckoutStatus,
 } from "../services/checkout-session.js";
-import { getSession } from "../services/db/session-repo.js";
+import {
+  findSessionByOrderRef,
+  getSession,
+} from "../services/db/session-repo.js";
 import {
   UCP_ERR,
   UCP_VERSION,
@@ -42,6 +45,11 @@ import {
   verifyCartToken,
   type CartTokenConfig,
 } from "./cart-token.js";
+import {
+  BodyTooLargeError,
+  MAX_BODY_JSON_API,
+  readBody as readBodyShared,
+} from "../http-utils.js";
 
 // ---------------------------------------------------------------------------
 // Wiring
@@ -62,11 +70,7 @@ export interface UcpDeps {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function sendUcp(
-  res: ServerResponse,
-  status: number,
-  body: unknown,
-): void {
+function sendUcp(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body, null, 2);
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
@@ -95,23 +99,13 @@ function ucpError(
 }
 
 async function readJson(req: IncomingMessage): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on("data", (c: Buffer) => chunks.push(c));
-    req.on("end", () => {
-      const raw = Buffer.concat(chunks).toString("utf8");
-      if (!raw) {
-        resolve({});
-        return;
-      }
-      try {
-        resolve(JSON.parse(raw));
-      } catch {
-        reject(new Error("invalid_json"));
-      }
-    });
-    req.on("error", reject);
-  });
+  const raw = await readBodyShared(req, MAX_BODY_JSON_API);
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error("invalid_json");
+  }
 }
 
 function extractCartToken(req: IncomingMessage): string | null {
@@ -126,7 +120,10 @@ function extractCartToken(req: IncomingMessage): string | null {
 // Route handlers
 // ---------------------------------------------------------------------------
 
-async function handleDiscovery(deps: UcpDeps, res: ServerResponse): Promise<void> {
+async function handleDiscovery(
+  deps: UcpDeps,
+  res: ServerResponse,
+): Promise<void> {
   const storeMeta = await deps.catalog.getStoreMeta();
   const envelope = buildDiscoveryEnvelope(
     {
@@ -148,7 +145,9 @@ async function handleSearch(
   if (!parsed.success) {
     const { status, body } = ucpError(
       UCP_ERR.INVALID_REQUEST,
-      parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "),
+      parsed.error.issues
+        .map((i) => `${i.path.join(".")}: ${i.message}`)
+        .join("; "),
       400,
     );
     sendUcp(res, status, body);
@@ -201,7 +200,9 @@ async function handleCreateCheckout(
   if (!parsed.success) {
     const { status, body } = ucpError(
       UCP_ERR.INVALID_REQUEST,
-      parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "),
+      parsed.error.issues
+        .map((i) => `${i.path.join(".")}: ${i.message}`)
+        .join("; "),
       400,
     );
     sendUcp(res, status, body);
@@ -290,10 +291,9 @@ async function handleCompleteCheckout(
     return;
   }
 
-  const continueUrl =
-    session.payment_group_id
-      ? `${deps.config.checkoutBaseUrl}/checkout/${session.payment_group_id}`
-      : null;
+  const continueUrl = session.payment_group_id
+    ? `${deps.config.checkoutBaseUrl}/checkout/${session.payment_group_id}`
+    : null;
 
   if (!continueUrl) {
     const { status, body } = ucpError(
@@ -337,7 +337,10 @@ async function handleGetOrder(
     checkout_session_id: session.id,
     platform_order_id: session.platform_order_id ?? undefined,
     platform_order_name: session.platform_order_name ?? undefined,
-    total: { amount: session.subtotal, currency_code: session.currency.toUpperCase() },
+    total: {
+      amount: session.subtotal,
+      currency_code: session.currency.toUpperCase(),
+    },
     transaction_id: session.tx_hash,
     created_at: session.created_at,
     updated_at: session.updated_at,
@@ -353,7 +356,11 @@ async function handleGetOrder(
 
 type AuthResult =
   | { readonly ok: true }
-  | { readonly ok: false; readonly status: number; readonly body: UcpErrorResponseT };
+  | {
+      readonly ok: false;
+      readonly status: number;
+      readonly body: UcpErrorResponseT;
+    };
 
 function authorizeSession(
   deps: UcpDeps,
@@ -378,7 +385,11 @@ function authorizeSession(
   if (verdict.payload.session_id !== sessionId) {
     return {
       ok: false,
-      ...ucpError(UCP_ERR.CART_TOKEN_INVALID, "Cart token does not match session", 403),
+      ...ucpError(
+        UCP_ERR.CART_TOKEN_INVALID,
+        "Cart token does not match session",
+        403,
+      ),
     };
   }
   return { ok: true };
@@ -391,8 +402,6 @@ function authorizeSession(
 async function findSessionByPlatformOrder(
   orderRef: string,
 ): Promise<Awaited<ReturnType<typeof getSession>>> {
-  // Using order_ref which is stable per session
-  const { findSessionByOrderRef } = await import("../services/db/session-repo.js");
   return findSessionByOrderRef(orderRef);
 }
 
@@ -462,6 +471,15 @@ export async function handleUcpRoute(
     }
     return false;
   } catch (err) {
+    if (err instanceof BodyTooLargeError) {
+      const { status, body } = ucpError(
+        UCP_ERR.INVALID_REQUEST,
+        `payload too large; limit ${MAX_BODY_JSON_API} bytes`,
+        413,
+      );
+      sendUcp(res, status, body);
+      return true;
+    }
     const msg = err instanceof Error ? err.message : String(err);
     const { status, body } = ucpError(UCP_ERR.INTERNAL, msg, 500);
     sendUcp(res, status, body);

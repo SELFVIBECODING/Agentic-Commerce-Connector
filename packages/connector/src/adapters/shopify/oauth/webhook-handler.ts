@@ -13,6 +13,11 @@ import { assertShopDomain, isValidShopDomain } from "./shop-domain.js";
 import { verifyShopifyWebhookHmac } from "./webhook-hmac.js";
 import type { InstallationStore } from "./installation-store.js";
 import type { OAuthConfig } from "./types.js";
+import {
+  BodyTooLargeError,
+  MAX_BODY_WEBHOOK,
+  readBody as readBodyShared,
+} from "../../../http-utils.js";
 
 export interface WebhookHandlerDeps {
   readonly oauthConfig: OAuthConfig;
@@ -35,12 +40,7 @@ function sendEmpty(res: ServerResponse, status: number): void {
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", reject);
-  });
+  return readBodyShared(req, MAX_BODY_WEBHOOK);
 }
 
 // ---------------------------------------------------------------------------
@@ -57,12 +57,22 @@ async function verifyAndExtract(
     return null;
   }
 
-  const hmacHeader = req.headers["x-shopify-hmac-sha256"] as
-    | string
-    | undefined;
+  const hmacHeader = req.headers["x-shopify-hmac-sha256"] as string | undefined;
   const shopHeader = req.headers["x-shopify-shop-domain"] as string | undefined;
 
-  const rawBody = await readBody(req);
+  let rawBody: string;
+  try {
+    rawBody = await readBody(req);
+  } catch (err) {
+    if (err instanceof BodyTooLargeError) {
+      sendJson(res, 413, {
+        error: "payload_too_large",
+        limit: MAX_BODY_WEBHOOK,
+      });
+      return null;
+    }
+    throw err;
+  }
 
   if (
     !verifyShopifyWebhookHmac(

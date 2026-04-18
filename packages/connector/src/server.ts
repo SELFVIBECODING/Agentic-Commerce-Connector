@@ -25,6 +25,8 @@ import {
   verifyWebhookSignature,
   handleWebhookEvent,
 } from "./services/webhook-handler.js";
+import { selectProcessedEventStore } from "./services/processed-events/factory.js";
+import type { ProcessedEventStore } from "./services/processed-events/store.js";
 import { startReconciler, stopReconciler } from "./services/reconciler.js";
 import {
   createCheckoutSession,
@@ -103,73 +105,99 @@ function createAdaptersForConfig(config: Config): Adapters {
 
 // ---------------------------------------------------------------------------
 // Bootstrap
+//
+// All process-level side effects (config load, DB pool init, adapter
+// construction, reconciler start, webhook handler registration) happen
+// inside `bootstrap()`, which is called from `main()`. Nothing below
+// executes at import time. This makes the module safe to import from
+// tests without spinning up real infrastructure.
 // ---------------------------------------------------------------------------
 
-const config = loadConfig();
-const transportMode = process.env.TRANSPORT ?? "stdio";
+let config: Config;
+let transportMode: string;
+let isOAuthOnly: boolean;
+let catalog: CatalogAdapter;
+let merchant: MerchantAdapter | null;
+let productCache: ReturnType<typeof createProductCache>;
+let processedEventStore: ProcessedEventStore;
 
-// Shopify OAuth mode defers adapter construction until an installation exists
-// (see docs/plans/2026-04-16-shopify-oauth-design.md). In this state we boot
-// a minimal portal that can accept the install flow, and short-circuit every
-// adapter-dependent subsystem.
-const isOAuthOnly = config.platform === "shopify" && config.mode === "oauth";
-
-// Set order prefix based on platform
 const ORDER_PREFIX_MAP: Record<string, string> = {
   shopify: "SHP",
   woocommerce: "WOO",
 };
-setOrderPrefix(ORDER_PREFIX_MAP[config.platform] ?? "ORD");
 
-// Initialize DB pool if DATABASE_URL is set
-if (config.databaseUrl) {
-  initPool(config.databaseUrl);
-} else {
-  console.error("Warning: DATABASE_URL not set. Using in-memory storage only.");
-}
+function bootstrap(): void {
+  config = loadConfig();
+  transportMode = process.env.TRANSPORT ?? "stdio";
 
-// Create adapters via factory — in OAuth-only mode we skip this: no credentials
-// exist yet. Downstream handlers that touch `catalog` / `merchant` are never
-// registered in this mode, so the null values never get read at runtime.
-// Phase 5 of the OAuth rollout replaces this shim with a real lookup against
-// the installation store.
-const adapters = isOAuthOnly
-  ? ({
-      catalog: null as unknown as CatalogAdapter,
-      merchant: null as MerchantAdapter | null,
-      productCache: createProductCache(),
-    } as Adapters)
-  : createAdaptersForConfig(config);
-const { catalog, merchant, productCache } = adapters;
+  // Shopify OAuth mode defers adapter construction until an installation
+  // exists (see docs/plans/2026-04-16-shopify-oauth-design.md). In this
+  // state we boot a minimal portal that can accept the install flow, and
+  // short-circuit every adapter-dependent subsystem.
+  isOAuthOnly = config.platform === "shopify" && config.mode === "oauth";
 
-// Reconciler — no work to do until an adapter exists.
-if (!isOAuthOnly) {
-  startReconciler({
-    nexusCoreUrl: config.nexusCoreUrl,
-    merchantDid: config.merchantDid,
-  });
-}
+  setOrderPrefix(ORDER_PREFIX_MAP[config.platform] ?? "ORD");
 
-// Register webhook handler
-registerWebhookHandler(async (_config, rawBody, sig, ts) => {
-  const result = verifyWebhookSignature(
-    _config.webhookSecret,
-    rawBody,
-    sig,
-    ts,
-  );
-  if (!result.valid) {
-    console.error(`[Webhook] Rejected: ${result.reason}`);
-    throw new Error(`Unauthorized: ${result.reason}`);
+  if (config.databaseUrl) {
+    initPool(config.databaseUrl);
+  } else {
+    console.error(
+      "Warning: DATABASE_URL not set. Using in-memory storage only.",
+    );
   }
 
-  const payload = JSON.parse(rawBody) as WebhookPayload;
-  return handleWebhookEvent(payload, {
-    nexusCoreUrl: _config.nexusCoreUrl,
-    merchantDid: _config.merchantDid,
-    merchant: merchant ?? undefined,
+  // In OAuth-only mode no credentials exist yet, so adapter-dependent
+  // handlers are never registered and the null values never get read at
+  // runtime. Phase 5 of the OAuth rollout replaces this shim with a real
+  // lookup against the installation store.
+  const adapters: Adapters = isOAuthOnly
+    ? {
+        catalog: null as unknown as CatalogAdapter,
+        merchant: null,
+        productCache: createProductCache(),
+      }
+    : createAdaptersForConfig(config);
+  catalog = adapters.catalog;
+  merchant = adapters.merchant;
+  productCache = adapters.productCache;
+
+  if (!isOAuthOnly) {
+    startReconciler({
+      nexusCoreUrl: config.nexusCoreUrl,
+      merchantDid: config.merchantDid,
+    });
+  }
+
+  // Processed-event store — persistent when ACC_DATA_DIR is set, in-memory
+  // otherwise. Persistence is what makes `payment.escrowed` dedup survive a
+  // pod restart so Nexus's retry loop can't trigger double settlement.
+  const selectedEventStore = selectProcessedEventStore({
+    dataDir: process.env.ACC_DATA_DIR,
   });
-});
+  processedEventStore = selectedEventStore.store;
+  console.error(`[Webhook] Dedup: ${selectedEventStore.describe}`);
+
+  registerWebhookHandler(async (_config, rawBody, sig, ts) => {
+    const result = verifyWebhookSignature(
+      _config.webhookSecret,
+      rawBody,
+      sig,
+      ts,
+    );
+    if (!result.valid) {
+      console.error(`[Webhook] Rejected: ${result.reason}`);
+      throw new Error(`Unauthorized: ${result.reason}`);
+    }
+
+    const payload = JSON.parse(rawBody) as WebhookPayload;
+    return handleWebhookEvent(payload, {
+      nexusCoreUrl: _config.nexusCoreUrl,
+      merchantDid: _config.merchantDid,
+      merchant: merchant ?? undefined,
+      processedEvents: processedEventStore,
+    });
+  });
+}
 
 // Store metadata cache (single value, long TTL)
 let storeMetaCache: StoreMeta | null = null;
@@ -531,6 +559,7 @@ function createMcpServer(): McpServer {
 // ── Start server ─────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
+  bootstrap();
   if (transportMode === "http") {
     await startHttpMode();
   } else {
@@ -766,8 +795,14 @@ async function startHttpMode(): Promise<void> {
   console.error(`  MCP:   http://localhost:${config.portalPort}/mcp`);
   console.error(`  Skill: http://localhost:${config.portalPort}/skill.md`);
 
-  // Fire-and-forget self-registration with nexus-core
-  registerWithNexusCore().catch(() => {});
+  // Fire-and-forget self-registration with nexus-core. The function already
+  // wraps its own body in try/catch and logs any failure as non-fatal; this
+  // outer catch exists only to prevent an unhandledRejection if that inner
+  // handler itself throws (e.g. the crypto import being unavailable). It
+  // MUST log rather than swallow so a second-level failure stays visible.
+  registerWithNexusCore().catch((err) => {
+    console.error("[Register] Second-level failure (non-fatal):", err);
+  });
 }
 
 process.on("SIGTERM", () => {

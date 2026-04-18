@@ -18,7 +18,12 @@ import {
   type RegisteredWebhook,
 } from "./webhooks-register.js";
 import { renderAdminShopifyPage } from "./admin-page.js";
-import { checkAdminBearer } from "./admin-auth.js";
+import { checkAdminBearer, checkAdminBearerValue } from "./admin-auth.js";
+import {
+  BodyTooLargeError,
+  MAX_BODY_JSON_API,
+  readBody as readBodyShared,
+} from "../../../http-utils.js";
 
 /**
  * Maximum allowed skew (in seconds) between Shopify's timestamp and local
@@ -298,9 +303,8 @@ export async function handleInstalledSuccess(
 ): Promise<void> {
   const url = parseUrl(req);
   const shopParam = url.searchParams.get("shop") ?? "";
-  let shop = "";
   try {
-    shop = assertShopDomain(shopParam);
+    assertShopDomain(shopParam);
   } catch {
     sendHtml(
       res,
@@ -309,22 +313,24 @@ export async function handleInstalledSuccess(
     return;
   }
 
-  const installation = await deps.installationStore.get(shop);
-  const scopes = installation?.scopes.join(", ") ?? "(none)";
-  const status = installation ? "connected" : "unknown";
-
+  // Render a generic "install complete" landing regardless of whether the
+  // lookup succeeds. The previous version leaked whether an arbitrary shop
+  // was installed (and its granted scopes) to any unauthenticated caller
+  // via the `?shop=` query — trivial enumeration. Scopes/status now live
+  // behind the bearer-gated /admin/shopify page only.
   sendHtml(
     res,
     `<!doctype html>
 <meta charset="utf-8">
 <title>ACC \u2014 Installed</title>
 <style>body{font-family:-apple-system,system-ui,sans-serif;max-width:520px;margin:4rem auto;padding:0 1rem;color:#111}code{background:#f4f4f4;padding:2px 6px;border-radius:4px}</style>
-<h1>\u2705 Connected</h1>
-<p>Shop: <code>${shop}</code></p>
-<p>Status: <code>${status}</code></p>
-<p>Granted scopes: <code>${scopes}</code></p>
-<p>Next: open <a href="/admin/shopify"><code>/admin/shopify</code></a> for the full status dashboard (bearer-gated \u2014 set <code>PORTAL_TOKEN</code> in env then pass it as <code>Authorization: Bearer &lt;token&gt;</code> or <code>?token=&lt;token&gt;</code>).</p>`,
+<h1>Install complete</h1>
+<p>Your shop has been connected. Verification details are available in the bearer-gated admin dashboard.</p>
+<p>Next: open <a href="/admin/shopify"><code>/admin/shopify</code></a> (set <code>PORTAL_TOKEN</code> in env, then pass it as <code>Authorization: Bearer &lt;token&gt;</code> or <code>?token=&lt;token&gt;</code>).</p>`,
   );
+  // Touch deps to keep the signature stable for callers/tests; the store
+  // is no longer read here by design.
+  void deps;
 }
 
 // ---------------------------------------------------------------------------
@@ -374,12 +380,7 @@ function parseForm(raw: string): Record<string, string> {
 }
 
 async function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on("data", (c: Buffer) => chunks.push(c));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", reject);
-  });
+  return readBodyShared(req, MAX_BODY_JSON_API);
 }
 
 export async function handleRotateStorefront(
@@ -392,21 +393,25 @@ export async function handleRotateStorefront(
     return;
   }
 
-  const rawBody = await readBody(req);
+  let rawBody: string;
+  try {
+    rawBody = await readBody(req);
+  } catch (err) {
+    if (err instanceof BodyTooLargeError) {
+      sendJson(res, 413, { error: "payload_too_large" });
+      return;
+    }
+    throw err;
+  }
   const form = parseForm(rawBody);
 
   // Accept the bearer either from the header/query OR the form body so the
-  // admin page's <form> can post it without JS.
+  // admin page's <form> can post it without JS. The form-body path routes
+  // through `checkAdminBearerValue` so comparison is constant-time — matching
+  // the header/query path.
   const url = parseUrl(req);
   const headerAuth = checkAdminBearer(req, url, deps.adminBearer);
-  const bodyAuth =
-    !form.token || !deps.adminBearer || form.token !== deps.adminBearer
-      ? {
-          ok: false as const,
-          status: 401 as const,
-          reason: "invalid_bearer",
-        }
-      : { ok: true as const };
+  const bodyAuth = checkAdminBearerValue(form.token, deps.adminBearer);
 
   if (!headerAuth.ok && !bodyAuth.ok) {
     if (headerAuth.status === 503) {
@@ -464,10 +469,12 @@ export async function handleRotateStorefront(
     return;
   }
 
-  // Redirect back to /admin/shopify, carrying the bearer as a query param so
-  // the subsequent GET is authorised.
-  const back = `/admin/shopify?token=${encodeURIComponent(deps.adminBearer)}`;
-  sendRedirect(res, back);
+  // Redirect back to /admin/shopify WITHOUT embedding the bearer in the
+  // Location header — that would write the token to reverse-proxy access
+  // logs, browser history, and any outbound Referer. The operator re-auths
+  // on the follow-up GET via the Authorization header (cURL/CLI) or the
+  // same `?token=` query they used to reach the admin page in the browser.
+  sendRedirect(res, "/admin/shopify");
 }
 
 // ---------------------------------------------------------------------------

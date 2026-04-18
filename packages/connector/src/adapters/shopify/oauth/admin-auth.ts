@@ -44,9 +44,36 @@ export function checkAdminBearer(
   if (!presented) {
     return { ok: false, status: 401, reason: "missing_bearer" };
   }
+  return compareToken(presented, configuredToken);
+}
+
+export function checkAdminBearerValue(
+  presented: string | undefined | null,
+  configuredToken: string,
+): AdminAuthOutcome {
+  if (!configuredToken) {
+    return {
+      ok: false,
+      status: 503,
+      reason:
+        "admin endpoint requires PORTAL_TOKEN to be set. Set it in env, then retry with Authorization: Bearer <token> (or ?token=<token>).",
+    };
+  }
+  if (!presented) {
+    return { ok: false, status: 401, reason: "missing_bearer" };
+  }
+  return compareToken(presented, configuredToken);
+}
+
+function compareToken(
+  presented: string,
+  configuredToken: string,
+): AdminAuthOutcome {
   const a = Buffer.from(presented);
   const b = Buffer.from(configuredToken);
-  if (a.length !== b.length) return { ok: false, status: 401, reason: "invalid_bearer" };
+  if (a.length !== b.length) {
+    return { ok: false, status: 401, reason: "invalid_bearer" };
+  }
   return timingSafeEqual(a, b)
     ? { ok: true }
     : { ok: false, status: 401, reason: "invalid_bearer" };

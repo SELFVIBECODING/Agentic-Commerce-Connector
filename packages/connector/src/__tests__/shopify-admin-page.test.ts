@@ -9,7 +9,10 @@ import { createShopifyOAuthRouter } from "../adapters/shopify/oauth/routes.js";
 import { createInMemoryStateStore } from "../adapters/shopify/oauth/state.js";
 import { createInMemoryInstallationStore } from "../adapters/shopify/oauth/installation-store.js";
 import type { InstallationStore } from "../adapters/shopify/oauth/installation-store.js";
-import type { OAuthConfig, ShopInstallation } from "../adapters/shopify/oauth/types.js";
+import type {
+  OAuthConfig,
+  ShopInstallation,
+} from "../adapters/shopify/oauth/types.js";
 
 const BEARER = "test-portal-token";
 
@@ -85,14 +88,17 @@ function newRouter(opts: {
     installationStore: store,
     selfUrl: "https://acc.example.com",
     adminBearer: opts.bearer ?? BEARER,
-    fetchImpl: opts.fetchImpl ?? ((async () =>
-      new Response("unused", { status: 200 })) as typeof fetch),
+    fetchImpl:
+      opts.fetchImpl ??
+      ((async () => new Response("unused", { status: 200 })) as typeof fetch),
     now: opts.now,
   });
   return { router, store };
 }
 
-function makeInstallation(overrides: Partial<ShopInstallation> = {}): ShopInstallation {
+function makeInstallation(
+  overrides: Partial<ShopInstallation> = {},
+): ShopInstallation {
   return {
     shopDomain: "foo.myshopify.com",
     adminToken: "shpat_x",
@@ -153,10 +159,7 @@ describe("GET /admin/shopify — bearer gate", () => {
   it("accepts bearer via ?token= query param", async () => {
     const { router } = newRouter({});
     const res = mockRes();
-    await router(
-      mockReq({ url: `/admin/shopify?token=${BEARER}` }),
-      res.res,
-    );
+    await router(mockReq({ url: `/admin/shopify?token=${BEARER}` }), res.res);
     expect(res.status()).toBe(200);
   });
 });
@@ -169,10 +172,7 @@ describe("GET /admin/shopify — content", () => {
   it("renders empty-state HTML when no installations exist", async () => {
     const { router } = newRouter({});
     const res = mockRes();
-    await router(
-      mockReq({ url: `/admin/shopify?token=${BEARER}` }),
-      res.res,
-    );
+    await router(mockReq({ url: `/admin/shopify?token=${BEARER}` }), res.res);
     expect(res.status()).toBe(200);
     expect(res.contentType()).toMatch(/text\/html/);
     expect(res.body()).toContain("No installations yet");
@@ -183,10 +183,7 @@ describe("GET /admin/shopify — content", () => {
     await store.save(makeInstallation());
     const { router } = newRouter({ store });
     const res = mockRes();
-    await router(
-      mockReq({ url: `/admin/shopify?token=${BEARER}` }),
-      res.res,
-    );
+    await router(mockReq({ url: `/admin/shopify?token=${BEARER}` }), res.res);
     expect(res.body()).toContain("foo.myshopify.com");
     expect(res.body()).toContain("scopes ok");
     expect(res.body()).not.toContain("needs");
@@ -197,10 +194,7 @@ describe("GET /admin/shopify — content", () => {
     await store.save(makeInstallation({ scopes: ["read_products"] }));
     const { router } = newRouter({ store });
     const res = mockRes();
-    await router(
-      mockReq({ url: `/admin/shopify?token=${BEARER}` }),
-      res.res,
-    );
+    await router(mockReq({ url: `/admin/shopify?token=${BEARER}` }), res.res);
     expect(res.body()).toContain("needs 3 more scope");
     expect(res.body()).toContain("Reinstall to upgrade scopes");
     expect(res.body()).toContain(
@@ -213,10 +207,7 @@ describe("GET /admin/shopify — content", () => {
     await store.save(makeInstallation({ storefrontToken: null }));
     const { router } = newRouter({ store });
     const res = mockRes();
-    await router(
-      mockReq({ url: `/admin/shopify?token=${BEARER}` }),
-      res.res,
-    );
+    await router(mockReq({ url: `/admin/shopify?token=${BEARER}` }), res.res);
     expect(res.body()).toContain("no storefront token");
   });
 
@@ -225,10 +216,7 @@ describe("GET /admin/shopify — content", () => {
     await store.save(makeInstallation({ uninstalledAt: 1_700_000_999_000 }));
     const { router } = newRouter({ store });
     const res = mockRes();
-    await router(
-      mockReq({ url: `/admin/shopify?token=${BEARER}` }),
-      res.res,
-    );
+    await router(mockReq({ url: `/admin/shopify?token=${BEARER}` }), res.res);
     expect(res.body()).toContain("uninstalled");
   });
 
@@ -237,15 +225,14 @@ describe("GET /admin/shopify — content", () => {
     await store.save(makeInstallation());
     const { router } = newRouter({ store });
     const res = mockRes();
-    await router(
-      mockReq({ url: `/admin/shopify?token=${BEARER}` }),
-      res.res,
-    );
+    await router(mockReq({ url: `/admin/shopify?token=${BEARER}` }), res.res);
     const html = res.body();
     // The reinstall <a href="..."> shouldn't include ?token=.
     expect(html).not.toMatch(/href="[^"]*\/install[^"]*token=/);
     // The rotate form's hidden input is the only legitimate bearer carrier.
-    expect(html).toMatch(/<input type="hidden" name="token" value="test-portal-token"/);
+    expect(html).toMatch(
+      /<input type="hidden" name="token" value="test-portal-token"/,
+    );
   });
 });
 
@@ -294,7 +281,11 @@ describe("POST /admin/shopify/rotate-storefront", () => {
       res.res,
     );
     expect(res.status()).toBe(302);
-    expect(res.headers().Location).toContain("/admin/shopify?token=");
+    // The redirect MUST NOT embed the bearer token — that would leak it to
+    // reverse-proxy access logs and Referer headers. Operator re-auths on
+    // the follow-up GET via Authorization header or their own `?token=` query.
+    expect(res.headers().Location).toBe("/admin/shopify");
+    expect(res.headers().Location).not.toContain("token=");
     expect(fetchCalls).toHaveLength(1);
     expect(fetchCalls[0].url).toContain("/admin/api/2025-07/graphql.json");
 

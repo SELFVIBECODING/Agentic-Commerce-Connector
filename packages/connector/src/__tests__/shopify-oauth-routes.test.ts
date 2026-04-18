@@ -441,7 +441,7 @@ describe("handleCallback", () => {
 // ---------------------------------------------------------------------------
 
 describe("handleInstalledSuccess", () => {
-  it("renders an HTML page with the installation summary", async () => {
+  it("renders a generic install-complete page (scopes/status live behind the admin bearer)", async () => {
     const h = newHarness();
     await h.installationStore.save({
       shopDomain: SHOP,
@@ -455,16 +455,24 @@ describe("handleInstalledSuccess", () => {
     await h.router(mockReq(`/admin/shopify/installed?shop=${SHOP}`), res.res);
     expect(res.status()).toBe(200);
     expect(res.headers()["Content-Type"]).toMatch(/text\/html/);
-    expect(res.body()).toContain(SHOP);
-    expect(res.body()).toContain("read_products");
+    expect(res.body()).toContain("Install complete");
+    // Generic page MUST NOT leak shop-specific state — this endpoint is
+    // reachable without auth and was previously an enumeration sink.
+    expect(res.body()).not.toContain(SHOP);
+    expect(res.body()).not.toContain("read_products");
   });
 
-  it("still renders (with 'unknown' status) when no installation exists", async () => {
+  it("renders the same generic page regardless of whether the shop is installed", async () => {
     const h = newHarness();
     const res = mockRes();
     await h.router(mockReq(`/admin/shopify/installed?shop=${SHOP}`), res.res);
     expect(res.status()).toBe(200);
-    expect(res.body()).toContain("unknown");
+    expect(res.body()).toContain("Install complete");
+    // Must not expose the internal `status: "unknown"` vs `"connected"`
+    // discriminator that previously leaked whether the shop was in the
+    // installation store.
+    expect(res.body()).not.toMatch(/Status:\s*<code>/);
+    expect(res.body()).not.toContain(SHOP);
   });
 });
 
