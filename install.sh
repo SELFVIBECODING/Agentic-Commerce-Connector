@@ -101,40 +101,106 @@ install_binary() {
 }
 
 # ── Ensure install dir is on PATH ───────────────────────────────────────────
+# We can't mutate the parent shell's environment from a `curl | sh` subprocess,
+# so the best we can do is:
+#   1. Append an `export PATH=…` to the shell's init files so future sessions
+#      see `acc`. We write both the interactive rc (.zshrc/.bashrc) AND the
+#      login profile (.zprofile/.bash_profile) when the latter already exists,
+#      because macOS Terminal launches login shells by default and those read
+#      the profile file, not the rc file.
+#   2. Print a single-line `export` the user can paste into their current
+#      session to use `acc` immediately — no new terminal needed.
 ensure_path() {
+    export_line="export PATH=\"${INSTALL_DIR}:\$PATH\""
+    fish_line="set -gx PATH \"${INSTALL_DIR}\" \$PATH"
+
+    if on_path; then
+        # Still print the one-liner; harmless if it's a no-op, useful if the
+        # user ran the installer in a fresh terminal that will get a new rc
+        # soon but they want to keep typing in the current one.
+        msg ""
+        msg "✓ ${INSTALL_DIR} is already on PATH."
+        return 0
+    fi
+
+    # Candidate rc files to update, in priority order. The first existing
+    # file (or the first entry if none exist) is the authoritative target
+    # we'll create/append to. Additional existing files get updated too,
+    # so login shells + non-login shells both see the export. Non-existing
+    # secondary files are skipped so we don't shadow a user's profile chain
+    # (e.g. creating .bash_profile on macOS silently disables .profile).
+    case "${SHELL:-}" in
+        */zsh)  candidates="$HOME/.zshrc $HOME/.zprofile" ;;
+        */bash) candidates="$HOME/.bashrc $HOME/.bash_profile $HOME/.profile" ;;
+        */fish) candidates="$HOME/.config/fish/config.fish" ;;
+        *)      candidates="$HOME/.profile" ;;
+    esac
+
+    added_to=""
+    already_in=""
+    first=""
+    for rc in $candidates; do
+        if [ -z "$first" ]; then first=$rc; fi
+        # Skip a non-existing secondary file to avoid shadowing the user's
+        # profile chain. The primary (first candidate) is always created
+        # if missing.
+        if [ ! -f "$rc" ] && [ "$rc" != "$first" ]; then
+            continue
+        fi
+        # Already injected in a previous run — record and skip.
+        if [ -f "$rc" ] && grep -Fq "$INSTALL_DIR" "$rc" 2>/dev/null; then
+            if [ -z "$already_in" ]; then
+                already_in=$(display_path "$rc")
+            else
+                already_in="${already_in}, $(display_path "$rc")"
+            fi
+            continue
+        fi
+        if [ ! -w "$(dirname "$rc")" ]; then
+            continue
+        fi
+
+        line=$export_line
+        if [ "${rc##*/}" = "config.fish" ]; then
+            line=$fish_line
+        fi
+
+        mkdir -p "$(dirname "$rc")"
+        printf '\n# Added by acc installer\n%s\n' "$line" >> "$rc"
+        if [ -z "$added_to" ]; then
+            added_to=$(display_path "$rc")
+        else
+            added_to="${added_to}, $(display_path "$rc")"
+        fi
+    done
+
+    msg ""
+    if [ -n "$added_to" ]; then
+        msg "✓ Added ${INSTALL_DIR} to PATH in ${added_to}"
+    elif [ -n "$already_in" ]; then
+        msg "✓ ${INSTALL_DIR} already wired into ${already_in} from a prior install."
+    else
+        msg "⚠ Could not write to any shell rc file."
+    fi
+    msg ""
+    msg "  To use 'acc' in THIS shell right now, run:"
+    msg "    ${export_line}"
+    msg "  (New terminals pick it up automatically via your shell rc.)"
+}
+
+on_path() {
     case ":$PATH:" in
         *:"$INSTALL_DIR":*) return 0 ;;
     esac
+    return 1
+}
 
-    rc=""
-    case "${SHELL:-}" in
-        */zsh)  rc="$HOME/.zshrc" ;;
-        */bash) rc="$HOME/.bashrc" ;;
-        */fish) rc="$HOME/.config/fish/config.fish" ;;
+# Render $1 with $HOME collapsed to ~ for readability in messages.
+display_path() {
+    case "$1" in
+        "$HOME"/*) printf '~/%s' "${1#"$HOME"/}" ;;
+        *)         printf '%s' "$1" ;;
     esac
-
-    if [ -z "$rc" ] || [ ! -w "$(dirname "$rc")" ]; then
-        msg ""
-        msg "⚠ ${INSTALL_DIR} is not on your PATH."
-        msg "  Add it manually:"
-        msg "    export PATH=\"${INSTALL_DIR}:\$PATH\""
-        return 0
-    fi
-
-    line="export PATH=\"${INSTALL_DIR}:\$PATH\""
-    if [ "${rc##*/}" = "config.fish" ]; then
-        line="set -gx PATH \"${INSTALL_DIR}\" \$PATH"
-    fi
-
-    if [ -f "$rc" ] && grep -Fq "$INSTALL_DIR" "$rc" 2>/dev/null; then
-        # Already present; nothing to do.
-        return 0
-    fi
-
-    mkdir -p "$(dirname "$rc")"
-    printf '\n# Added by acc installer\n%s\n' "$line" >> "$rc"
-    msg "✓ Added ${INSTALL_DIR} to PATH in $(basename "$rc")"
-    msg "  Open a new shell or run:  source ${rc#$HOME/~}"
 }
 
 # ── Main ────────────────────────────────────────────────────────────────────
