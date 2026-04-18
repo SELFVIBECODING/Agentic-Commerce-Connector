@@ -15,12 +15,19 @@
 | You need | Why | Where |
 |---|---|---|
 | A Shopify store (any plan) | Source of products / checkout | `myshop.myshopify.com` |
-| A Shopify Partners account (free) | To create the OAuth app | `partners.shopify.com` |
-| A host for the ACC connector | Must have **public HTTPS** | Render / Fly / your own box + Cloudflare Tunnel |
+| A Shopify Partners account (free) + configured app | To issue OAuth credentials | Follow **[SHOPIFY_PARTNERS_SETUP.md](./SHOPIFY_PARTNERS_SETUP.md)** — ~10 minutes, one-time |
+| A host for the ACC connector | Must have **public HTTPS** | Render / Fly / your own VPS + Cloudflare Tunnel |
 | A wallet you control | Sign marketplace submissions | MetaMask / any EOA; keep the private key safe |
-| A stable HTTPS URL for the skill file | Marketplace fetches it | your domain, GitHub Pages, R2, etc. |
+
+> **Payment rails.** Phase 1 ships without any payment provider wired end-to-end. `acc init` step 6 records your selection (currently only "none") and the published skill advertises `supported_payments: []`. Nexus/PlatON, Stripe, and x402 support arrive in upcoming releases — a payout wallet isn't needed until then.
 
 Local-only testing is possible using `ngrok` / Cloudflare Tunnel for the HTTPS callback, or by using the manual-token fallback (see §A).
+
+**Do the Partners setup first.** `acc init shopify` will ask for the
+`client_id` and `client_secret` that only exist after you've configured
+a Partners app with your connector's URLs. The [SHOPIFY_PARTNERS_SETUP](./SHOPIFY_PARTNERS_SETUP.md)
+doc walks through it in ~10 minutes; doing it later means interrupting the
+wizard mid-flow.
 
 ---
 
@@ -28,60 +35,85 @@ Local-only testing is possible using `ngrok` / Cloudflare Tunnel for the HTTPS c
 
 ### 1.1 Deploy ACC
 
-Clone and deploy the public connector:
+Two paths, pick whichever matches your infra:
+
+**Path A — Binary install on any host with public HTTPS (recommended):**
 
 ```bash
-git clone https://github.com/<org>/Agentic-Commerce-Connector.git
-cd Agentic-Commerce-Connector
+curl -fsSL https://www.siliconretail.com/install.sh | sh
 ```
 
-Pick a hosting target (Render template: `render.yaml`; Docker: `docker-compose.yml`). After deploy, note the public URL — we'll call it `ACC_URL` below, e.g. `https://acc.myshop.com`.
+Installs `acc` to `~/.acc/bin/`. Zero deps. You're responsible for
+putting a public HTTPS reverse proxy in front of port 10000.
 
-### 1.2 Create a Shopify Custom-Distribution app
-
-In the Partners portal → **Apps → Create app → Create app manually**:
-
-- **App URL:** `${ACC_URL}/admin/shopify`
-- **Allowed redirection URL(s):** `${ACC_URL}/auth/shopify/callback`
-- **API scopes:** `read_products`, `read_inventory`, `write_orders`, `read_orders` (optional: `write_draft_orders`).
-
-Copy the generated `client_id` and `client_secret`.
-
-### 1.3 Run `acc init` (one-shot wizard)
-
-From the cloned repo:
+**Path B — One-command VPS deploy (fresh Debian/Ubuntu box):**
 
 ```bash
-npm install && npm run build
-npx acc init
+curl -fsSL https://www.siliconretail.com/install-server.sh | \
+  ACC_PUBLIC_HOSTNAME=acc.myshop.com sudo bash
 ```
 
-The 8-step wizard:
+Handles the system user, binary, nginx/Caddy, Let's Encrypt TLS, systemd,
+and the init wizard in one shot.
 
-1. **Preflight** — checks Node ≥ 20 and `better-sqlite3`.
-2. **Data directory** — creates `./acc-data/{keys,skill,db}` with 0700 perms.
+**Path C — Build from source (dev):** `git clone` + `npm install && npm run build`.
+
+In all three cases, note the public URL — we'll call it `ACC_URL` below,
+e.g. `https://acc.myshop.com`.
+
+### 1.2 Create your Shopify Partners app
+
+Follow **[SHOPIFY_PARTNERS_SETUP.md](./SHOPIFY_PARTNERS_SETUP.md)** — ~10
+minutes. The doc walks through:
+
+- Creating a free Partners account
+- Creating a Custom Distribution app (no App Store review required)
+- Configuring App URL + redirect URL to match your `ACC_URL`
+- Setting API scopes (`read_products`, `read_inventory`, `read_orders`, `write_orders`)
+- Configuring the three mandatory GDPR webhook URLs
+- Filling Privacy Policy + Support URLs
+- Copying out `client_id` + `client_secret`
+
+You'll paste those two credentials into the wizard in §1.3.
+
+### 1.3 Run `acc init shopify` (one-shot wizard)
+
+If you used Path A or C, run from your preferred working directory:
+
+```bash
+acc init shopify
+```
+
+Path B runs this for you during the server bootstrap.
+
+The 10-step wizard:
+
+1. **Preflight** — runtime checks.
+2. **Data directory** — creates `~/.acc/{keys,skill,db}` (binary install) or `./acc-data/{...}` (source install) with 0700 perms.
 3. **Public URL** — prompts for `${ACC_URL}` (your public HTTPS), stored as `SELF_URL`.
-4. **Encryption key** — generates a 32-byte AES-256 key at `acc-data/keys/enc.key` (0600) and mirrors to `.env: ACC_ENCRYPTION_KEY`.
-5. **Marketplace signer** — generate a new EOA, import an existing `0x…` hex key, or skip. Writes `acc-data/keys/signer.key` (0600). Optional at-rest encryption via `--encrypt-signer`.
-6. **Shopify Partners** — opens `partners.shopify.com` in your browser (or prints the URL if headless) and collects `client_id` / `client_secret` into `.env`.
-7. **SQLite migration** — creates `acc-data/db/acc.sqlite` with the `shopify_installations` table.
-8. **Skill template** — writes `acc-data/skill/acc-skill.md` ready for editing.
+4. **Encryption key** — generates a 32-byte AES-256 key at `keys/enc.key` (0600) and mirrors to `.env: ACC_ENCRYPTION_KEY`.
+5. **Marketplace signer** — generate a new EOA, import an existing `0x…` hex key, or skip. Writes `keys/signer.key` (0600). Optional at-rest encryption via `--encrypt-signer`.
+6. **Payment methods** — asks which payment rails your storefront accepts. Phase 1 ships with only one option: **"No payment methods yet"**. Writes `PAYMENT_PROVIDER=none` to `.env`; the published skill advertises `supported_payments: []`. Additional rails (Nexus/PlatON, Stripe, x402) arrive in future releases — re-run `acc init` (choice `b`) when they land to pick one.
+7. **Shopify Partners creds** — prints the exact App URL / redirect URL / scopes you should have pasted into Partners (sanity check), then prompts for `client_id` + `client_secret`.
+8. **SQLite migration** — creates `db/acc.sqlite` with the `shopify_installations` table.
+9. **Categories (multi-select)** — pick one or more from the Silicon Retail taxonomy: **Fashion / Electronics / Books / Home / Food / Services / Digital / Travel**. Type comma-separated letters (e.g. `a,c,h` → Fashion, Books, Travel). Order is preserved by catalog position (not input order) so the published frontmatter is deterministic.
+10. **Skill template** — writes `skill/acc-skill.md` with your selected categories and auto-derived name/URLs. Auto-served at `${ACC_URL}/.well-known/acc-skill.md` (see Part 2).
 
-Finale prints `config.json` summary + the install link + next-step pointer.
+Finale prints `config.json` summary + next-step pointer.
 
-**Re-running:** `acc init` detects an existing `acc-data/config.json` and offers: keep-as-is / update-shopify-creds-only / start-over (backs up old config) / cancel.
+**Re-running:** `acc init shopify` detects an existing `config.json` and offers: keep-as-is / update-Shopify-creds-only / start-over (backs up old config) / cancel.
 
 ### 1.4 Connect your Shopify store
 
 Start the connector first:
 
 ```bash
-npm --workspace packages/connector start
+acc start
 ```
 
 Then either:
 
-- **Interactive:** `npx acc shopify connect --shop=<your-store>.myshopify.com` — prints the install URL + a terminal QR code, and polls the local SQLite store until the shop completes install.
+- **Interactive:** `acc shopify connect --shop=<your-store>.myshopify.com` — prints the install URL + a terminal QR code, and polls the local SQLite store until the shop completes install.
 - **Manual:** visit `${ACC_URL}/auth/shopify/install?shop=<your-store>.myshopify.com` in any browser.
 
 You'll be redirected to Shopify's consent screen. Approve the scopes. On callback the connector will:
@@ -105,57 +137,70 @@ If those return real products from your Shopify store, the connector is live.
 
 ---
 
-## Part 2 · Prepare your skill package
+## Part 2 · Your skill package is already live
 
-A **skill package** is a single Markdown file with YAML frontmatter. The frontmatter is what the marketplace indexes; the body is freeform documentation for humans and agents.
+Because your connector is already running on public HTTPS, it **hosts the
+skill file itself** — no separate static site, GitHub Pages, or CDN
+setup. `acc init shopify` at step 8 wrote a publish-ready template to
+`acc-data/skill/acc-skill.md` (or `~/.acc/skill/acc-skill.md` for the
+binary install), and the connector serves it at:
 
-### 2.1 Generate a template
+```
+${ACC_URL}/.well-known/acc-skill.md
+```
 
-From the connector repo (or any install of `@acc/cli`):
-
-If you ran `acc init`, the template is already at `acc-data/skill/acc-skill.md`. To regenerate elsewhere:
+Verify:
 
 ```bash
-npx acc skill init --out ./acc-skill.md
+curl ${ACC_URL}/.well-known/acc-skill.md
 ```
 
-### 2.2 Fill in the frontmatter
+You should see the auto-generated markdown back. That URL is what
+`acc publish` submits to the marketplace in Part 3 — no hosting step for you.
 
-Edit `acc-skill.md`:
+### 2.1 Auto-filled fields (no action needed)
 
-```yaml
----
-name: My Store
-description: Short one-line pitch for the marketplace listing (<= 280 chars).
-skill_id: my-store-v1
-categories: [apparel]
-supported_platforms: [shopify]
-supported_payments: [stripe, x402]
-health_url: https://acc.myshop.com/health
-tags: [streetwear, agent-ready]
-website_url: https://myshop.com
----
+The template at step 8 derives these from `config.json` + the platform
+you picked, so they're already correct and stable across re-runs:
 
-# My Store
+| Field | Auto-filled from |
+|---|---|
+| `name` | Hostname-derived (e.g. `https://acc.myshop.com` → "Myshop") |
+| `skill_id` | Stable id derived from hostname (e.g. `myshop-acc`) |
+| `supported_platforms` | The platform you chose in step 1 (e.g. `["shopify"]`) |
+| `supported_payments` | Conservative default for your platform (e.g. `["shopify_payments"]`) |
+| `health_url` | `${ACC_URL}/health` |
+| `website_url` | Derived from the root domain of `${ACC_URL}` |
 
-Freeform markdown describing what this merchant exposes to agents:
+The body already links every `ucp/v1/*` endpoint and the skill URL itself.
 
-- Catalog browse, checkout, order status
-- Shopify storefront backed by the ACC UCP/1.0 façade at https://acc.myshop.com/ucp/v1
-- Support: support@myshop.com
+### 2.2 Optional polish
+
+If you want a punchier marketplace listing, open the file and tweak
+these fields — nothing else is required:
+
+- `description` — the one-line pitch buyers' agents show before browsing
+- `categories` — e.g. `[apparel]`, `[electronics]`, `[food]`
+- `tags` — free-form discovery hints, e.g. `[streetwear, made-in-usa]`
+- `website_url` — your customer-facing storefront if different from what was derived
+
+Re-run `acc publish` after any edit to refresh the marketplace's stored hash.
+
+### 2.3 Advanced: host somewhere else
+
+Most merchants should stop here — the connector's `/.well-known/`
+endpoint is sufficient. If you have a specific reason to host the skill
+file on a different URL (e.g. your marketing domain handles caching
+better, or you want the skill file under `https://myshop.com/…` for brand
+reasons), override it on publish:
+
+```bash
+acc publish --url=https://myshop.com/.well-known/acc-skill.md
 ```
 
-The `skill_id` is the stable identity across versions — keep it constant through updates. Everything else can change between submissions.
-
-### 2.3 Host the file over HTTPS
-
-The marketplace never stores the skill — it only stores a pointer and a content hash. Host the file on a URL you control. Common choices:
-
-- `https://myshop.com/.well-known/acc-skill.md` — static file on your website
-- GitHub Pages / Cloudflare R2 / any CDN
-- A route served directly by the connector at `${ACC_URL}/.well-known/acc-skill.md`
-
-The URL must be stable; if you move it, you publish a new version pointing at the new URL.
+You become responsible for keeping that URL's bytes in sync with the
+connector's `/.well-known/acc-skill.md`. The marketplace verifies the
+SHA-256 hash on its next refetch and surfaces a warning if they drift.
 
 ---
 
@@ -168,13 +213,13 @@ There is **no separate registration step**. The first EIP-712-signed submission 
 Zero-arg mode (recommended — reads `acc-data/config.json` + `keys/signer.key`):
 
 ```bash
-npx acc publish
+acc publish
 ```
 
 Or with explicit flags (for non-default configurations):
 
 ```bash
-npx acc publish ./acc-skill.md \
+acc publish ./acc-skill.md \
   --url=https://myshop.com/.well-known/acc-skill.md \
   --registry=https://api.siliconretail.com \
   --private-key=0x<your-wallet-private-key>
@@ -222,7 +267,7 @@ Because the payload includes a fresh `nonce` and `submitted_at`, the marketplace
 
 ```bash
 # After editing acc-skill.md and re-hosting it
-npx acc-skill publish ./acc-skill.md \
+acc publish ./acc-skill.md \
   --url=https://myshop.com/.well-known/acc-skill.md \
   --registry=https://api.siliconretail.com \
   --private-key=0x...

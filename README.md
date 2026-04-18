@@ -54,28 +54,87 @@ Anyone can build a compatible marketplace against the public spec.
 
 ## Quick Start
 
+**Before you start:** Shopify merchants need a one-time Partners app
+configured with this connector's URLs. Follow
+[docs/SHOPIFY_PARTNERS_SETUP.md](./docs/SHOPIFY_PARTNERS_SETUP.md)
+(~10 minutes) to get your `client_id` + `client_secret` before running
+the wizard below.
+
+You also need a public HTTPS endpoint for the connector (Render, Fly, a
+VPS behind Caddy/nginx, or Cloudflare Tunnel — anything that serves HTTPS).
+
+### 1. Install the binary
+
 ```bash
-git clone https://github.com/SELFVIBECODING/agentic-commerce-connector.git
-cd agentic-commerce-connector
-npm install && npm run build
+curl -fsSL https://www.siliconretail.com/install.sh | sh
+```
 
-# 8-step interactive wizard — creates ./acc-data/ with config.json, .env,
-# encryption key, signer wallet, Shopify creds, SQLite schema, skill.md.
-npx acc init
+Installs `acc` into `~/.acc/bin/`. Zero dependencies — no Node, no git,
+no build toolchain. Works on macOS (arm64 + x64) and Linux (x64 + arm64).
 
-# Start the connector (reads ./acc-data/.env + ./acc-data/db/acc.sqlite).
-npm --workspace packages/connector start
+To upgrade later: `acc upgrade`.
 
-# In another terminal — prints install URL + QR, polls until install done.
-npx acc shopify connect --shop=<your-store>.myshopify.com
+### 2. Configure for your store
 
-# Edit the generated skill template, then publish to the marketplace.
-$EDITOR ./acc-data/skill/acc-skill.md
-npx acc publish
+```bash
+# 10-step interactive wizard — creates ~/.acc/ (or ./acc-data/ if run from
+# a repo checkout) with config.json, .env, encryption key, signer wallet,
+# Shopify Partners creds, SQLite schema, skill.md.
+acc init shopify
+
+# Boot the connector. Listens on PORTAL_PORT (default 10000). Your reverse
+# proxy should forward your public domain → 127.0.0.1:10000.
+acc start
+```
+
+### 3. Connect your Shopify store
+
+```bash
+# Prints the install URL (+ QR code) and polls until the shop completes
+# OAuth. Run from any machine that can reach your acc-data/ directory.
+acc shopify connect --shop=<your-store>.myshopify.com
+```
+
+### 4. Publish your skill to the marketplace
+
+```bash
+$EDITOR ~/.acc/skill/acc-skill.md   # or ./acc-data/skill/acc-skill.md
+acc publish
+```
+
+### Diagnostics
+
+```bash
+acc doctor        # check data-dir, config, keys, portal reachability
+acc version       # show installed version + commit
+acc help          # show all commands
 ```
 
 Full walkthrough: [docs/MERCHANT_ONBOARDING.md](./docs/MERCHANT_ONBOARDING.md).
 All CLI commands: [docs/CLI.md](./docs/CLI.md).
+
+### One-command VPS deploy
+
+If you have a fresh Debian/Ubuntu VPS and a hostname pointed at it, this
+sets up the system user, binary, reverse proxy (nginx or Caddy), TLS via
+Let's Encrypt, systemd unit, and runs the wizard — in one shot:
+
+```bash
+curl -fsSL https://www.siliconretail.com/install-server.sh | \
+  ACC_PUBLIC_HOSTNAME=acc.mystore.com sudo bash
+```
+
+### Alternative: build from source
+
+Developers can still clone and run via Node:
+
+```bash
+git clone https://github.com/SELFVIBECODING/Agentic-Commerce-Connector.git
+cd Agentic-Commerce-Connector
+npm install && npm run build
+npx acc init shopify
+npm --workspace packages/connector start
+```
 
 ### Docker
 
@@ -103,7 +162,7 @@ docker compose up -d
   at-rest token encryption, SQLite + Postgres installation stores.
 - `packages/skill-spec/` — v0.1 types, EIP-712 typed data, JCS canonicalisation,
   JSON Schemas. Spec doc at `packages/skill-spec/SPEC.md`.
-- `packages/cli/` — `acc` binary shipped: init (8-step wizard), shopify connect,
+- `packages/cli/` — `acc` binary shipped: init (10-step wizard incl. payment menu + category multi-select), shopify connect,
   wallet (show/new/import), publish (zero-arg), skill init, version, help.
   Deferred to later phases: `acc start/stop/status/doctor`, `acc skill edit`,
   `acc shopify status/disconnect`.
