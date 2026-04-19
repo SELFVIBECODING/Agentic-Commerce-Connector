@@ -14,8 +14,13 @@
 // directly under a runtime guard.
 // ---------------------------------------------------------------------------
 
+export interface SqliteRunResult {
+  /** Number of rows changed by the statement (INSERT/UPDATE/DELETE). */
+  readonly changes: number;
+}
+
 export interface SqliteStatement {
-  run(params?: unknown): void;
+  run(params?: unknown): SqliteRunResult;
   get(params?: unknown): unknown;
   all(params?: unknown): unknown[];
 }
@@ -30,7 +35,8 @@ export interface SqliteDatabase {
 
 const isBun =
   typeof process !== "undefined" &&
-  typeof (process as unknown as { versions?: Record<string, string> }).versions?.bun === "string";
+  typeof (process as unknown as { versions?: Record<string, string> }).versions
+    ?.bun === "string";
 
 export async function openSqlite(path: string): Promise<SqliteDatabase> {
   return isBun ? await openBun(path) : await openNode(path);
@@ -58,8 +64,11 @@ async function openBun(path: string): Promise<SqliteDatabase> {
       const q = db.query(sql);
       return {
         run(params) {
-          if (params === undefined) q.run();
-          else q.run(normalizeBunParams(params) as never);
+          const raw =
+            params === undefined
+              ? q.run()
+              : q.run(normalizeBunParams(params) as never);
+          return normalizeRunResult(raw);
         },
         get(params) {
           return params === undefined
@@ -108,9 +117,24 @@ interface BunDb {
 }
 
 interface BunQuery {
-  run(params?: unknown): void;
+  run(params?: unknown): unknown;
   get(params?: unknown): unknown;
   all(params?: unknown): unknown[];
+}
+
+/**
+ * Both bun:sqlite and better-sqlite3 return `{ changes, lastInsertRowid }`
+ * from `run()`. Coerce to our SqliteRunResult shape; default to 0 if the
+ * underlying driver ever returns undefined.
+ */
+function normalizeRunResult(raw: unknown): SqliteRunResult {
+  if (raw && typeof raw === "object" && "changes" in raw) {
+    const changes = (raw as { changes: unknown }).changes;
+    return {
+      changes: typeof changes === "number" ? changes : Number(changes) || 0,
+    };
+  }
+  return { changes: 0 };
 }
 
 // ── Node backend ────────────────────────────────────────────────────────────
@@ -134,8 +158,9 @@ async function openNode(path: string): Promise<SqliteDatabase> {
       const stmt = db.prepare(sql);
       return {
         run(params) {
-          if (params === undefined) stmt.run();
-          else stmt.run(params as never);
+          const raw =
+            params === undefined ? stmt.run() : stmt.run(params as never);
+          return normalizeRunResult(raw);
         },
         get(params) {
           return params === undefined ? stmt.get() : stmt.get(params as never);
@@ -156,7 +181,7 @@ interface BetterSqliteDb {
   pragma(stmt: string): unknown;
   exec(sql: string): void;
   prepare(sql: string): {
-    run(params?: unknown): void;
+    run(params?: unknown): unknown;
     get(params?: unknown): unknown;
     all(params?: unknown): unknown[];
   };

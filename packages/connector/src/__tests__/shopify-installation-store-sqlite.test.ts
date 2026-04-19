@@ -143,6 +143,93 @@ describe("SqliteInstallationStore", () => {
     void dbPath;
   });
 
+  it("listRefreshable is empty until rotateTokens populates the phase-2 fields", async () => {
+    const s = await open();
+    await s.save(makeInstallation({ shopDomain: "fresh.myshopify.com" }));
+    // Phase 1 save writes NULL into token_expires_at + refresh_token — not refreshable.
+    expect(await s.listRefreshable()).toEqual([]);
+
+    await s.rotateTokens({
+      shopDomain: "fresh.myshopify.com",
+      adminToken: "rotated_admin",
+      refreshToken: "rotated_rt",
+      tokenExpiresAt: 1_700_000_100_000,
+    });
+
+    const list = await s.listRefreshable();
+    expect(list).toHaveLength(1);
+    expect(list[0].shopDomain).toBe("fresh.myshopify.com");
+    expect(list[0].refreshToken).toBe("rotated_rt");
+    expect(list[0].tokenExpiresAt).toBe(1_700_000_100_000);
+
+    // get() sees the rotated admin_token.
+    const got = await s.get("fresh.myshopify.com");
+    expect(got?.adminToken).toBe("rotated_admin");
+  });
+
+  it("listRefreshable honours the beforeMs cutoff", async () => {
+    const s = await open();
+    await s.save(makeInstallation({ shopDomain: "near.myshopify.com" }));
+    await s.save(makeInstallation({ shopDomain: "far.myshopify.com" }));
+    await s.rotateTokens({
+      shopDomain: "near.myshopify.com",
+      adminToken: "a",
+      refreshToken: "r1",
+      tokenExpiresAt: 100,
+    });
+    await s.rotateTokens({
+      shopDomain: "far.myshopify.com",
+      adminToken: "a",
+      refreshToken: "r2",
+      tokenExpiresAt: 10_000,
+    });
+
+    const within = await s.listRefreshable(500);
+    expect(within.map((r) => r.shopDomain)).toEqual(["near.myshopify.com"]);
+  });
+
+  it("rotateTokens is a no-op on an uninstalled row", async () => {
+    const s = await open();
+    await s.save(makeInstallation({ shopDomain: "gone.myshopify.com" }));
+    await s.rotateTokens({
+      shopDomain: "gone.myshopify.com",
+      adminToken: "a",
+      refreshToken: "r",
+      tokenExpiresAt: 1,
+    });
+    await s.markUninstalled("gone.myshopify.com", 999);
+    const ok = await s.rotateTokens({
+      shopDomain: "gone.myshopify.com",
+      adminToken: "new_admin",
+      refreshToken: "new_r",
+      tokenExpiresAt: 2,
+    });
+    expect(ok).toBe(false);
+  });
+
+  it("save() preserves phase-2 refresh fields (COALESCE invariant)", async () => {
+    const s = await open();
+    await s.save(makeInstallation());
+    await s.rotateTokens({
+      shopDomain: "foo.myshopify.com",
+      adminToken: "rotated_admin",
+      refreshToken: "rotated_rt",
+      tokenExpiresAt: 123456,
+    });
+    // A subsequent Phase-1 style save() (scopes changed, say) must NOT
+    // wipe the refresh fields just rotated in by the worker.
+    await s.save(
+      makeInstallation({
+        adminToken: "re_saved_admin",
+        scopes: ["read_products"],
+      }),
+    );
+    const list = await s.listRefreshable();
+    expect(list).toHaveLength(1);
+    expect(list[0].refreshToken).toBe("rotated_rt");
+    expect(list[0].tokenExpiresAt).toBe(123456);
+  });
+
   it("rejects decryption when the key is rotated (data-loss sentinel)", async () => {
     const s = await open();
     await s.save(makeInstallation());

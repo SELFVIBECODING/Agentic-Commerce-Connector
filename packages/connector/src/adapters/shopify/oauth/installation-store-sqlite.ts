@@ -15,10 +15,20 @@
 // the shipped binary, better-sqlite3 under Node for dev/tests.
 // ---------------------------------------------------------------------------
 
-import { openSqlite, type SqliteDatabase } from "../../../services/db/sqlite.js";
-import { encryptToken, decryptToken } from "../../../services/crypto/token-cipher.js";
+import {
+  openSqlite,
+  type SqliteDatabase,
+} from "../../../services/db/sqlite.js";
+import {
+  encryptToken,
+  decryptToken,
+} from "../../../services/crypto/token-cipher.js";
 import type { ShopInstallation } from "./types.js";
-import type { InstallationStore } from "./installation-store.js";
+import type {
+  InstallationStore,
+  RefreshableInstallation,
+  RotateTokensInput,
+} from "./installation-store.js";
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS shopify_installations (
@@ -41,12 +51,16 @@ CREATE TABLE IF NOT EXISTS shopify_installations (
  * reserved for the Phase 2 relay-refresh flow; Phase 1 writes NULL.
  */
 async function ensureSchemaV2(db: SqliteDatabase): Promise<void> {
-  const cols = db.prepare("PRAGMA table_info(shopify_installations)").all() as Array<{
+  const cols = db
+    .prepare("PRAGMA table_info(shopify_installations)")
+    .all() as Array<{
     readonly name: string;
   }>;
   const names = new Set(cols.map((c) => c.name));
   if (!names.has("token_expires_at")) {
-    db.exec("ALTER TABLE shopify_installations ADD COLUMN token_expires_at INTEGER");
+    db.exec(
+      "ALTER TABLE shopify_installations ADD COLUMN token_expires_at INTEGER",
+    );
   }
   if (!names.has("refresh_token")) {
     db.exec("ALTER TABLE shopify_installations ADD COLUMN refresh_token TEXT");
@@ -99,6 +113,11 @@ export async function createSqliteInstallationStore(
   const getStmt = db.prepare(
     "SELECT * FROM shopify_installations WHERE shop_domain = ?",
   );
+  // NB: on the UPDATE branch we COALESCE the refresh-related fields with
+  // the existing row so a call to save() that comes in with null
+  // (the Phase-1 shape) doesn't wipe refresh tokens rotated by the
+  // background worker. Install wizards that want to set these fields
+  // explicitly use the separate admin-install path via rotateTokens().
   const upsertStmt = db.prepare(
     `INSERT INTO shopify_installations
        (shop_domain, admin_token, storefront_token, scopes, installed_at, uninstalled_at, key_version, token_expires_at, refresh_token)
@@ -110,13 +129,34 @@ export async function createSqliteInstallationStore(
        installed_at      = excluded.installed_at,
        uninstalled_at    = excluded.uninstalled_at,
        key_version       = excluded.key_version,
-       token_expires_at  = excluded.token_expires_at,
-       refresh_token     = excluded.refresh_token`,
+       token_expires_at  = COALESCE(excluded.token_expires_at, shopify_installations.token_expires_at),
+       refresh_token     = COALESCE(excluded.refresh_token, shopify_installations.refresh_token)`,
   );
   const uninstallStmt = db.prepare(
     "UPDATE shopify_installations SET uninstalled_at = ? WHERE shop_domain = ?",
   );
   const listStmt = db.prepare("SELECT * FROM shopify_installations");
+  // M4: refresh-worker queries.
+  //
+  // listRefreshableStmt — rows where both phase-2 fields are populated and
+  // the row is still active. The worker filters further on beforeMs in JS
+  // when it needs to restrict to the 1h window; keeping the SQL stable
+  // simplifies the prepared-statement cache.
+  const listRefreshableStmt = db.prepare(
+    `SELECT shop_domain, admin_token, refresh_token, token_expires_at
+       FROM shopify_installations
+      WHERE uninstalled_at IS NULL
+        AND refresh_token IS NOT NULL
+        AND token_expires_at IS NOT NULL`,
+  );
+  const rotateTokensStmt = db.prepare(
+    `UPDATE shopify_installations
+        SET admin_token      = @admin_token,
+            refresh_token    = @refresh_token,
+            token_expires_at = @token_expires_at
+      WHERE shop_domain = @shop_domain
+        AND uninstalled_at IS NULL`,
+  );
 
   function rowToInstallation(row: Row): ShopInstallation {
     return {
@@ -161,6 +201,37 @@ export async function createSqliteInstallationStore(
 
     async list(): Promise<readonly ShopInstallation[]> {
       return (listStmt.all() as Row[]).map(rowToInstallation);
+    },
+
+    async listRefreshable(
+      beforeMs?: number,
+    ): Promise<readonly RefreshableInstallation[]> {
+      const raw = listRefreshableStmt.all() as Array<{
+        readonly shop_domain: string;
+        readonly admin_token: string;
+        readonly refresh_token: string;
+        readonly token_expires_at: number;
+      }>;
+      const out: RefreshableInstallation[] = [];
+      for (const r of raw) {
+        if (beforeMs !== undefined && r.token_expires_at >= beforeMs) continue;
+        out.push({
+          shopDomain: r.shop_domain,
+          refreshToken: decryptToken(r.refresh_token, opts.encryptionKey),
+          tokenExpiresAt: r.token_expires_at,
+        });
+      }
+      return out;
+    },
+
+    async rotateTokens(input: RotateTokensInput): Promise<boolean> {
+      const result = rotateTokensStmt.run({
+        shop_domain: input.shopDomain,
+        admin_token: encryptToken(input.adminToken, opts.encryptionKey),
+        refresh_token: encryptToken(input.refreshToken, opts.encryptionKey),
+        token_expires_at: input.tokenExpiresAt,
+      });
+      return result.changes > 0;
     },
 
     close(): void {
