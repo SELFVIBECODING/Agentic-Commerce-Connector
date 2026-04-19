@@ -1,17 +1,16 @@
 // ---------------------------------------------------------------------------
-// readline-backed interactive prompts.
+// Interactive prompts. `ask` reads line-buffered stdin directly (no
+// readline.createInterface); `askSecret` reads raw-mode byte-by-byte so
+// the password never echoes. The IO layer is injectable (`PromptIO`) so
+// tests can stub stdin without spawning a subprocess.
 //
-// A thin functional layer over `node:readline` that exposes ask / askYesNo /
-// askChoice / askSecret. The underlying IO is injectable (`PromptIO`) so tests
-// can stub stdin without spawning a subprocess.
-//
-// For `askSecret`, we flip the terminal into raw mode and manually consume
-// bytes so that the password never appears on the user's screen. If the
-// stream is non-TTY (e.g. piped stdin in CI) we fall back to a plain readline
-// read — printing a warning that the secret will echo.
+// Why no readline: when compiled with `bun build --compile`, the shipped
+// binary's `readline.createInterface({ terminal: true })` occasionally
+// emits a spurious `close` before the first `question` callback fires.
+// That resolved the ask promise to null silently, the event loop drained,
+// and the process exited right after printing the prompt. Bypassing
+// readline sidesteps the whole stack.
 // ---------------------------------------------------------------------------
-
-import * as readline from "node:readline";
 
 export interface PromptIO {
   ask(question: string): Promise<string | null>;
@@ -191,29 +190,46 @@ export function createPrompter(io: PromptIO): Prompter {
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Default IO bound to node:readline + process.stdin                          */
+/*  Default IO bound to process.stdin (line-buffered, no readline).            */
+/*                                                                              */
+/*  We read stdin directly instead of using node:readline.createInterface      */
+/*  because under the shipped Bun-compiled binary `rl.question` sometimes      */
+/*  never fires its callback and rl emits a spurious 'close' on the very       */
+/*  first ask — the promise resolves to null silently, the event loop          */
+/*  drains, and the process exits with nothing on stdout beyond the prompt     */
+/*  itself. Users see "Shopify Partners client_id" and the shell prompt        */
+/*  comes straight back. Direct stdin listeners keep the event loop alive      */
+/*  while a prompt is outstanding, which readline-in-Bun was failing to do.    */
+/*                                                                              */
+/*  In non-raw TTY mode the kernel line-disciplines input for us: echo +       */
+/*  local backspace + line buffering. We just read the first newline-          */
+/*  terminated chunk. askSecret still uses raw mode for character-by-          */
+/*  character silent input.                                                     */
 /* -------------------------------------------------------------------------- */
 
 export function defaultPromptIO(): PromptIO {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    terminal: true,
+  // leftover preserves bytes that arrived past the first newline — a
+  // piped stdin may deliver the whole script in one chunk, and sequential
+  // prompts (including the non-TTY askSecret fallback) need to drain
+  // from this shared buffer instead of blocking on a dead stream.
+  const state = { leftover: "", stdinEnded: false };
+  process.stdin.once("end", () => {
+    state.stdinEnded = true;
   });
 
   return {
     ask(q) {
-      return new Promise((resolve) => {
-        rl.question(q, (answer) => resolve(answer));
-        rl.once("close", () => resolve(null));
-      });
+      process.stdout.write(q);
+      return readLine(state);
     },
     askSecret(q) {
       return new Promise((resolve) => {
         process.stdout.write(q);
         const stdin = process.stdin;
         if (!stdin.isTTY) {
-          rl.once("line", (line) => resolve(line));
+          // No TTY: fall back to the same line-buffered read as `ask`.
+          // Secret will be visible on screen — unavoidable without a TTY.
+          readLine(state).then(resolve);
           return;
         }
         stdin.setRawMode(true);
@@ -245,7 +261,13 @@ export function defaultPromptIO(): PromptIO {
       });
     },
     close() {
-      rl.close();
+      // No readline interface to tear down any more; pause stdin so the
+      // event loop can drain naturally at process exit.
+      try {
+        process.stdin.pause();
+      } catch {
+        /* stdin may already be closed under test harnesses */
+      }
     },
   };
 }
@@ -259,6 +281,66 @@ function decorate(question: string, opts: AskOptions): string {
     return `${question} [${opts.default}] `;
   }
   return `${question} `;
+}
+
+/**
+ * Shared line reader used by both `ask` and `askSecret`'s non-TTY path.
+ * Preserves bytes past the first newline in `state.leftover` so that a
+ * piped stdin delivering the full script in one chunk still serves each
+ * subsequent prompt. On EOF with no buffered input, resolves null.
+ */
+interface LineReaderState {
+  leftover: string;
+  stdinEnded: boolean;
+}
+
+function readLine(state: LineReaderState): Promise<string | null> {
+  return new Promise((resolve) => {
+    // Fast-path: an earlier chunk already contained a full line.
+    const preNl = state.leftover.indexOf("\n");
+    if (preNl >= 0) {
+      const line = state.leftover.slice(0, preNl).replace(/\r$/, "");
+      state.leftover = state.leftover.slice(preNl + 1);
+      resolve(line);
+      return;
+    }
+
+    if (state.stdinEnded) {
+      resolve(null);
+      return;
+    }
+
+    const stdin = process.stdin;
+    const settle = (value: string | null): void => {
+      stdin.off("data", onData);
+      stdin.off("end", onEnd);
+      stdin.pause();
+      resolve(value);
+    };
+    const onData = (chunk: Buffer): void => {
+      state.leftover += chunk.toString("utf-8");
+      const nl = state.leftover.indexOf("\n");
+      if (nl < 0) return;
+      const line = state.leftover.slice(0, nl).replace(/\r$/, "");
+      state.leftover = state.leftover.slice(nl + 1);
+      settle(line);
+    };
+    const onEnd = (): void => {
+      state.stdinEnded = true;
+      // Flush any trailing line without a newline — rare but happens on
+      // some piped inputs.
+      if (state.leftover.length > 0) {
+        const line = state.leftover.replace(/\r$/, "");
+        state.leftover = "";
+        settle(line);
+      } else {
+        settle(null);
+      }
+    };
+    stdin.on("data", onData);
+    stdin.once("end", onEnd);
+    stdin.resume();
+  });
 }
 
 /* -------------------------------------------------------------------------- */
