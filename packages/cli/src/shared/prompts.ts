@@ -223,7 +223,7 @@ export function defaultPromptIO(): PromptIO {
       return readLine(state);
     },
     askSecret(q) {
-      return new Promise((resolve) => {
+      return new Promise<string | null>((resolve) => {
         process.stdout.write(q);
         const stdin = process.stdin;
         if (!stdin.isTTY) {
@@ -232,22 +232,37 @@ export function defaultPromptIO(): PromptIO {
           readLine(state).then(resolve);
           return;
         }
+        // The preceding `ask` call ends with stdin.pause() to let the
+        // event loop drain on normal exit. Without an explicit resume()
+        // here, setRawMode + data listener alone don't restart the
+        // stream — byte events never arrive and the promise hangs until
+        // the process exits silently. Resume BEFORE attaching the
+        // listener so any already-buffered bytes get re-delivered.
+        stdin.resume();
         stdin.setRawMode(true);
         let buf = "";
+        const settle = (value: string | null): void => {
+          try {
+            stdin.setRawMode(false);
+          } catch {
+            /* some harnesses don't implement setRawMode */
+          }
+          stdin.off("data", onData);
+          stdin.off("end", onEnd);
+          stdin.pause();
+          resolve(value);
+        };
         const onData = (chunk: Buffer): void => {
           for (const byte of chunk) {
             if (byte === 0x03) {
               // ctrl-c
-              stdin.setRawMode(false);
-              stdin.off("data", onData);
+              settle(null);
               process.stdout.write("\n");
               process.exit(130);
             }
             if (byte === 0x0a || byte === 0x0d) {
-              stdin.setRawMode(false);
-              stdin.off("data", onData);
               process.stdout.write("\n");
-              resolve(buf);
+              settle(buf);
               return;
             }
             if (byte === 0x7f || byte === 0x08) {
@@ -257,7 +272,12 @@ export function defaultPromptIO(): PromptIO {
             buf += String.fromCharCode(byte);
           }
         };
+        const onEnd = (): void => {
+          state.stdinEnded = true;
+          settle(null);
+        };
         stdin.on("data", onData);
+        stdin.once("end", onEnd);
       });
     },
     close() {
