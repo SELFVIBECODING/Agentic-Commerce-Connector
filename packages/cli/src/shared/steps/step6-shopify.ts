@@ -25,6 +25,7 @@ import { readFileSync } from "node:fs";
 import { upsertEnv } from "../env-writer.js";
 import {
   InstallInterruptedError,
+  RelayCapacityExhaustedError,
   RelayerClient,
   pollUntilReady,
   type PairPollReady,
@@ -165,7 +166,28 @@ async function runRelayerInstall(ctx: StepContext): Promise<StepOutcome> {
     );
   }
 
-  const pair = await client.pairNew({ shopDomain, connectorUrl });
+  let pair: Awaited<ReturnType<typeof client.pairNew>>;
+  try {
+    pair = await client.pairNew({ shopDomain, connectorUrl });
+  } catch (err) {
+    if (err instanceof RelayCapacityExhaustedError) {
+      // Friendlier than a generic `[Relay] pair/new returned 503`. This
+      // is a deliberate product signal from the relay operator —
+      // prompt the merchant to pivot to the self-hosted Partners
+      // option rather than just letting the stack trace fly.
+      throw new InstallInterruptedError(
+        `The Silicon Retail relayer is at its Shopify Custom Distribution cap (50 installs) and can't accept new ones right now.\n\n` +
+          `  What to do:\n` +
+          `    1. Re-run: acc init shopify\n` +
+          `    2. At step 8 pick "Self-hosted — I have my own Shopify Partners app"\n` +
+          `    3. Follow docs/SHOPIFY_PARTNERS_SETUP.md (~10 min, one-time)\n` +
+          `\n` +
+          `  The relay operator has been notified automatically; App Store\n` +
+          `  submission removes this cap and will be rolled out soon.`,
+      );
+    }
+    throw err;
+  }
 
   if (!ctx.seed) {
     process.stdout.write(

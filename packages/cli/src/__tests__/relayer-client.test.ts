@@ -1,12 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   InstallInterruptedError,
+  RelayCapacityExhaustedError,
   pollUntilReady,
   RelayerClient,
 } from "../shared/relayer-client.js";
 
 function makeFetchStub(
-  handler: (req: { url: string; init?: RequestInit }) => Response | Promise<Response>,
+  handler: (req: {
+    url: string;
+    init?: RequestInit;
+  }) => Response | Promise<Response>,
 ) {
   return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
@@ -86,6 +90,49 @@ describe("RelayerClient.pairNew", () => {
         connectorUrl: "https://acc.foo.com",
       }),
     ).rejects.toThrow(/pair\/new returned 400.*invalid_shop/);
+  });
+
+  it("throws RelayCapacityExhaustedError on 503 capacity_exhausted", async () => {
+    const fetchImpl = makeFetchStub(
+      () =>
+        new Response(
+          JSON.stringify({
+            error: "capacity_exhausted",
+            message:
+              "Shopify Custom Distribution cap reached. Ask the operator, or use 'acc init shopify' with self-hosted Partners.",
+          }),
+          { status: 503 },
+        ),
+    );
+    const client = new RelayerClient({
+      relayUrl: "https://r.test/relayer",
+      fetchImpl,
+    });
+    await expect(
+      client.pairNew({
+        shopDomain: "full.myshopify.com",
+        connectorUrl: "https://acc.foo.com",
+      }),
+    ).rejects.toBeInstanceOf(RelayCapacityExhaustedError);
+  });
+
+  it("does NOT throw RelayCapacityExhaustedError on a non-capacity 503", async () => {
+    const fetchImpl = makeFetchStub(
+      () =>
+        new Response(JSON.stringify({ error: "db_unreachable" }), {
+          status: 503,
+        }),
+    );
+    const client = new RelayerClient({
+      relayUrl: "https://r.test/relayer",
+      fetchImpl,
+    });
+    await expect(
+      client.pairNew({
+        shopDomain: "x.myshopify.com",
+        connectorUrl: "https://acc.foo.com",
+      }),
+    ).rejects.not.toBeInstanceOf(RelayCapacityExhaustedError);
   });
 });
 
@@ -180,9 +227,7 @@ describe("pollUntilReady loop", () => {
   });
 
   it("throws InstallInterruptedError when the pair expires mid-poll", async () => {
-    const fetchImpl = makeFetchStub(
-      () => new Response("", { status: 410 }),
-    );
+    const fetchImpl = makeFetchStub(() => new Response("", { status: 410 }));
     const client = new RelayerClient({
       relayUrl: "https://r.test/relayer",
       fetchImpl,
@@ -200,10 +245,9 @@ describe("pollUntilReady loop", () => {
   it("throws InstallInterruptedError when the deadline passes without ready", async () => {
     const fetchImpl = makeFetchStub(
       () =>
-        new Response(
-          JSON.stringify({ status: "pending", expires_in: 10 }),
-          { status: 200 },
-        ),
+        new Response(JSON.stringify({ status: "pending", expires_in: 10 }), {
+          status: 200,
+        }),
     );
     const client = new RelayerClient({
       relayUrl: "https://r.test/relayer",
