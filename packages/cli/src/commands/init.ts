@@ -170,17 +170,8 @@ function platformSteps(
 ): Array<readonly [string, (c: StepContext) => Promise<{ summary: string }>]> {
   if (platform === "shopify") {
     if (action === "shopify-only") {
-      // Re-entrant path to re-run just the Shopify install. The merchant
-      // can flip between self-hosted Partners and the Silicon Retail
-      // relayer here — SQLite has already been migrated on the original
-      // install, so the relayer branch can persist its installation row
-      // immediately.
       return [["7/10 Shopify install method", stepShopify]];
     }
-    // Reorder from the original 8-step wizard: SQLite migration now runs
-    // BEFORE the Shopify install step because the relayer branch writes
-    // an encrypted installation row the moment the pair/poll returns
-    // ready — the schema must exist by then.
     return [
       ["1/10 Preflight", stepPreflight],
       ["2/10 Data directory", stepDataDir],
