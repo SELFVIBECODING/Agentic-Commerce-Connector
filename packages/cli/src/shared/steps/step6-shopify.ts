@@ -38,7 +38,13 @@ const SETUP_DOC_URL =
 const DEFAULT_SCOPES =
   "read_products, read_inventory, read_orders, write_orders";
 
-const DEFAULT_RELAY_URL = "https://api.siliconretail.com/relayer";
+// Temporary Phase 2 host: the relay runs on Render's managed onrender.com
+// subdomain while the siliconretail.com Cloudflare custom-domain config
+// is pending (Render custom-domain slot limit). The relay's route paths
+// keep the /relayer/ prefix so the URL shape stays stable when we later
+// point a branded domain at the same service.
+const DEFAULT_RELAY_URL =
+  "https://acc-marketplace-relayer.onrender.com/relayer";
 
 const POLL_INTERVAL_MS = 2_000;
 const POLL_DEADLINE_MS = 10 * 60 * 1_000;
@@ -275,9 +281,8 @@ async function writeInstallation(
     );
   }
 
-  const { createSqliteInstallationStore } = await import(
-    "@acc/connector/shopify-oauth"
-  );
+  const { createSqliteInstallationStore } =
+    await import("@acc/connector/shopify-oauth");
 
   const store = await createSqliteInstallationStore({
     dbPath: ctx.layout.dbFile,
