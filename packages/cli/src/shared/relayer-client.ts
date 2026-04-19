@@ -115,8 +115,44 @@ export class RelayerClient {
   }
 }
 
+/**
+ * Thrown when `/pair/new` hits the relay's Shopify Custom Distribution
+ * hard cap (50 active installations per app). The wizard's relayer
+ * branch catches this specifically and prompts the merchant to re-run
+ * `acc init shopify` and pick the self-hosted path, instead of
+ * surfacing it as a generic "pair/new returned 503" error.
+ */
+export class RelayCapacityExhaustedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RelayCapacityExhaustedError";
+  }
+}
+
 async function relayError(res: Response, op: string): Promise<Error> {
   const bodyText = await res.text().catch(() => "");
+  // Try to parse the relay's structured error envelope. When present,
+  // we turn specific `error` codes into typed subclasses so callers can
+  // render an actionable prompt rather than a generic stack.
+  let errorCode: string | undefined;
+  let bodyMessage: string | undefined;
+  if (bodyText) {
+    try {
+      const parsed = JSON.parse(bodyText) as Record<string, unknown>;
+      if (typeof parsed.error === "string") errorCode = parsed.error;
+      if (typeof parsed.message === "string") bodyMessage = parsed.message;
+    } catch {
+      /* not JSON; fall through to the string suffix */
+    }
+  }
+
+  if (res.status === 503 && errorCode === "capacity_exhausted") {
+    return new RelayCapacityExhaustedError(
+      bodyMessage ??
+        "Shopify Custom Distribution cap reached on this relay. Re-run 'acc init shopify' and choose the self-hosted Partners option.",
+    );
+  }
+
   return new Error(
     `[Relay] ${op} returned ${res.status}${
       bodyText ? `: ${bodyText.slice(0, 200)}` : ""

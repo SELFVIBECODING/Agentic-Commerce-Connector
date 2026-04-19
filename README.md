@@ -170,9 +170,11 @@ docker compose up -d
   at-rest token encryption, SQLite + Postgres installation stores.
 - `packages/skill-spec/` — v0.1 types, EIP-712 typed data, JCS canonicalisation,
   JSON Schemas. Spec doc at `packages/skill-spec/SPEC.md`.
-- `packages/cli/` — `acc` binary shipped: init (10-step wizard incl. payment menu + category multi-select), shopify connect,
+- `packages/cli/` — `acc` binary shipped: init (10-step wizard incl. payment
+  menu + category multi-select + self-hosted-vs-Silicon-Retail-relayer
+  install-method menu), shopify connect, start, doctor, upgrade,
   wallet (show/new/import), publish (zero-arg), skill init, version, help.
-  Deferred to later phases: `acc start/stop/status/doctor`, `acc skill edit`,
+  Deferred: `acc stop/status`, `acc skill edit`,
   `acc shopify status/disconnect`.
 
 ## Documentation
