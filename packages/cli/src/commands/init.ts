@@ -23,6 +23,8 @@ import {
   backupConfig,
   type AccConfig,
 } from "../shared/config-store.js";
+import { printLogo } from "../shared/logo.js";
+import { bold, brightBlue, green, dim } from "../shared/ansi.js";
 import { stepPreflight } from "../shared/steps/step1-preflight.js";
 import { stepDataDir } from "../shared/steps/step2-data-dir.js";
 import { stepSelfUrl } from "../shared/steps/step3-self-url.js";
@@ -87,6 +89,10 @@ export async function runInit(
   const prompter = createPrompter(io);
   const seed = opts.seed ?? nonInteractiveSeedFromEnv();
 
+  // Only print the banner for interactive runs — piped/seeded invocations
+  // (tests, scripted installers) don't want decorative noise on stdout.
+  if (!seed) printLogo("wizard");
+
   try {
     // Platform resolution. Precedence:
     //   1. Positional arg on the command line (`acc init shopify`)
@@ -136,9 +142,9 @@ export async function runInit(
     const steps = platformSteps(platform, action);
 
     for (const [label, step] of steps) {
-      process.stdout.write(`\n${label}\n`);
+      process.stdout.write(`\n${bold(brightBlue(label))}\n`);
       const out = await step(ctx);
-      process.stdout.write(`  → ${out.summary}\n`);
+      process.stdout.write(`  ${green("→")} ${dim(out.summary)}\n`);
     }
 
     const final = finaliseConfig(ctx.config, layout);
@@ -330,13 +336,13 @@ function printFinaleSummary(
   platform: string,
 ): void {
   process.stdout.write(
-    `\n✓ acc init complete (platform: ${platform})\n` +
-      `  data dir : ${layout.root}\n` +
-      `  registry : ${cfg.registry}\n` +
-      `  selfUrl  : ${cfg.selfUrl}\n` +
-      `  wallet   : ${cfg.wallet?.address ?? "(not configured)"}\n` +
-      `  skill    : ${cfg.skillMdPath}\n` +
-      `\nNext: acc start\n`,
+    `\n${bold(green("✓ acc init complete"))} ${dim(`(platform: ${platform})`)}\n` +
+      `  ${dim("data dir")} : ${layout.root}\n` +
+      `  ${dim("registry")} : ${cfg.registry}\n` +
+      `  ${dim("selfUrl")}  : ${cfg.selfUrl}\n` +
+      `  ${dim("wallet")}   : ${cfg.wallet?.address ?? dim("(not configured)")}\n` +
+      `  ${dim("skill")}    : ${cfg.skillMdPath}\n` +
+      `\n${bold("Next:")} ${brightBlue("acc start")}\n`,
   );
 }
 
