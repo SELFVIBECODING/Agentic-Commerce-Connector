@@ -69,12 +69,42 @@ export interface Prompter {
   close(): void;
 }
 
+/**
+ * Raised when stdin closes (EOF) mid-prompt. Keeping this as a named error
+ * class lets callers (or the top-level dispatcher) offer a user-facing
+ * message that points at the likely cause — usually the terminal losing
+ * its TTY connection, e.g. the user closing the window or a tmux pane
+ * detaching — rather than the wizard silently looping forever and then
+ * exiting when the event loop drains.
+ */
+export class InputClosedError extends Error {
+  constructor(question: string) {
+    super(
+      `Input stream closed before a value was entered for "${question.trim()}". ` +
+        "This usually means the terminal window was closed or disconnected. " +
+        "Re-run the same command to continue — if you had already typed values " +
+        "into earlier steps and those are stored in acc-data/, the wizard will " +
+        "offer to resume.",
+    );
+    this.name = "InputClosedError";
+  }
+}
+
 export function createPrompter(io: PromptIO): Prompter {
   return {
     async ask(question, opts = {}) {
       while (true) {
         const raw = await io.ask(decorate(question, opts));
-        const value = raw === null || raw === "" ? (opts.default ?? "") : raw;
+        if (raw === null) {
+          // stdin EOF. If the caller supplied a default, honour it (the
+          // original contract; relied on by prompts.test.ts). Otherwise
+          // this is a genuine "terminal went away" — throw a diagnostic
+          // error instead of looping forever on a dead stream, which
+          // would drain the event loop and exit silently.
+          if (opts.default !== undefined) return opts.default;
+          throw new InputClosedError(question);
+        }
+        const value = raw === "" ? (opts.default ?? "") : raw;
         const err = opts.validate?.(value) ?? null;
         if (err === null) return value;
         (io.error ?? ((m: string) => process.stderr.write(`${m}\n`)))(
@@ -88,7 +118,11 @@ export function createPrompter(io: PromptIO): Prompter {
       const suffix = def === true ? "[Y/n]" : def === false ? "[y/N]" : "[y/n]";
       while (true) {
         const raw = await io.ask(`${question} ${suffix} `);
-        const value = (raw ?? "").trim().toLowerCase();
+        if (raw === null) {
+          if (def !== undefined) return def;
+          throw new InputClosedError(question);
+        }
+        const value = raw.trim().toLowerCase();
         if (value === "" && def !== undefined) return def;
         if (value === "y" || value === "yes") return true;
         if (value === "n" || value === "no") return false;
@@ -107,7 +141,8 @@ export function createPrompter(io: PromptIO): Prompter {
         "\n> ";
       while (true) {
         const raw = await io.ask(rendered);
-        const value = (raw ?? "").trim().toLowerCase();
+        if (raw === null) throw new InputClosedError(question);
+        const value = raw.trim().toLowerCase();
         const match = choices.find((c) => c.key.toLowerCase() === value);
         if (match) return match.key;
       }
@@ -126,7 +161,8 @@ export function createPrompter(io: PromptIO): Prompter {
         `\n  (comma-separated, e.g. "a,c")\n> `;
       while (true) {
         const raw = await io.ask(rendered);
-        const letters = (raw ?? "")
+        if (raw === null) throw new InputClosedError(question);
+        const letters = raw
           .split(/[,\s]+/)
           .map((s) => s.trim().toLowerCase())
           .filter((s) => s.length > 0);
@@ -144,7 +180,8 @@ export function createPrompter(io: PromptIO): Prompter {
 
     async askSecret(question) {
       const raw = await io.askSecret(question);
-      return raw ?? "";
+      if (raw === null) throw new InputClosedError(question);
+      return raw;
     },
 
     close() {
