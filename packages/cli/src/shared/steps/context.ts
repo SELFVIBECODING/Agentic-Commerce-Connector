@@ -37,19 +37,6 @@ export interface NonInteractiveSeed {
   readonly chainId: number;
   readonly shopifyClientId: string;
   readonly shopifyClientSecret: string;
-  /**
-   * Shopify install method. Defaults to "self-hosted" when omitted and
-   * `shopifyClientId`/`shopifyClientSecret` are provided — keeps
-   * existing wizard fixtures working unchanged. Set to "relayer" to
-   * route step 7 through the Silicon Retail install relay; in that
-   * mode client_id/secret are ignored in favour of the relay flow
-   * wired against `shopifyShopDomain` + `relayUrl`.
-   */
-  readonly shopifyInstallMethod?: "self-hosted" | "relayer";
-  /** Required when shopifyInstallMethod === "relayer". */
-  readonly shopifyShopDomain?: string;
-  /** Override the default relay URL (tests). */
-  readonly relayUrl?: string;
   /** "generate" | "skip" | hex-private-key */
   readonly signer: string;
   /** Optional passphrase when signer should be encrypted at rest. */

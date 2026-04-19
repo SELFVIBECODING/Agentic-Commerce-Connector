@@ -54,22 +54,19 @@ Anyone can build a compatible marketplace against the public spec.
 
 ## Quick Start
 
-**Two install paths.** Shopify merchants pick one in step 8 of the wizard:
+Shopify merchants currently run the **self-hosted Partners** flow:
+you register your own Shopify Partners account and hold your own
+`client_secret`. ~10-minute one-time setup via
+[docs/SHOPIFY_PARTNERS_SETUP.md](./docs/SHOPIFY_PARTNERS_SETUP.md).
 
-- **Self-hosted Partners (default, full control).** You register your own
-  Shopify Partners account and hold your own `client_secret`. ~10-minute
-  one-time setup via
-  [docs/SHOPIFY_PARTNERS_SETUP.md](./docs/SHOPIFY_PARTNERS_SETUP.md).
-- **Silicon Retail relayer (zero setup).** Silicon Retail operates a
-  shared Partners app at `api.siliconretail.com/relayer`. You type your
-  shop domain, click one link, done. No Partners account, no
-  `client_secret` on your box. **Runtime traffic never touches the
-  relay** — see the [protocol spec](./docs/spec/relayer-protocol.md)
-  and [merchant walkthrough](./docs/MERCHANT_ONBOARDING.md#13-run-acc-init-shopify-one-shot-wizard).
+A zero-setup "Silicon Retail relayer" track is planned for Stream B
+(see [plan doc](./docs/plans/2026-04-19-stream-b-saas-relayer-gateway.md)).
+The install-time relayer shipped in v0.5.0 has been removed from the
+wizard pending that rearchitecture.
 
-Either way, you also need a public HTTPS endpoint for the connector
-(Render, Fly, a VPS behind Caddy/nginx, or Cloudflare Tunnel — anything
-that serves HTTPS).
+You also need a public HTTPS endpoint for the connector (Render, Fly,
+a VPS behind Caddy/nginx, or Cloudflare Tunnel — anything that serves
+HTTPS).
 
 ### 1. Install the binary
 
@@ -170,12 +167,11 @@ docker compose up -d
   at-rest token encryption, SQLite + Postgres installation stores.
 - `packages/skill-spec/` — v0.1 types, EIP-712 typed data, JCS canonicalisation,
   JSON Schemas. Spec doc at `packages/skill-spec/SPEC.md`.
-- `packages/cli/` — `acc` binary shipped: init (10-step wizard incl. payment
-  menu + category multi-select + self-hosted-vs-Silicon-Retail-relayer
-  install-method menu), shopify connect, start, doctor, upgrade,
-  wallet (show/new/import), publish (zero-arg), skill init, version, help.
-  Deferred: `acc stop/status`, `acc skill edit`,
-  `acc shopify status/disconnect`.
+- `packages/cli/` — `acc` binary shipped: init (10-step wizard: payment
+  menu + category multi-select + self-hosted Shopify Partners install),
+  shopify connect, start, doctor, upgrade, wallet (show/new/import),
+  publish (zero-arg), skill init, version, help. Deferred: `acc
+  stop/status`, `acc skill edit`, `acc shopify status/disconnect`.
 
 ## Documentation
 
