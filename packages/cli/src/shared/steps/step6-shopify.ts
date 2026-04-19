@@ -1,27 +1,53 @@
 // ---------------------------------------------------------------------------
 // Step 6 — Shopify Partners credentials (per-merchant Custom Distribution).
 //
-// Before asking the merchant for client_id / client_secret, print the three
-// values they need to paste into their Partners app config (App URL,
-// Allowed redirection URL, API scopes). This lets the merchant flip to the
-// Partners tab with everything ready to copy, instead of hunting through
-// docs while the wizard blocks.
+// Flow:
+//   1. Print the three values the merchant must paste into their Partners
+//      app (App URL, Allowed redirect URL, API scopes) — computed from the
+//      selfUrl they entered in step 3.
+//   2. Open the setup doc in their browser up-front (not after creds are
+//      entered) so the Partners tab is already on screen while they come
+//      back to paste. The wizard blocks at the client_id prompt below
+//      until they return.
+//   3. Prompt for client_id + client_secret. These write to .env
+//      atomically once both are collected.
 //
-// If SELF_URL hasn't been set yet (step 3 hasn't run) we print placeholders
-// — re-entrant "shopify-only" mode hits that path when the merchant only
-// wants to rotate credentials.
+// The prompt literally blocks waiting for stdin — the user can take as
+// long as they need to create the app. Message copy is emphatic about
+// NOT closing the terminal, because the earlier copy ("wizard will wait
+// here") was misread as "you can close this and come back later" and
+// some users did just that, losing their wizard progress.
+//
+// Re-entrant "shopify-only" mode (the `b` choice on the re-entry menu)
+// hits this path when the merchant only wants to rotate credentials.
+// selfUrl will already be populated from the previous run.
 // ---------------------------------------------------------------------------
 import { openBrowser } from "../open-browser.js";
 import { upsertEnv } from "../env-writer.js";
 import type { StepContext, StepOutcome } from "./context.js";
 
-const PARTNERS_URL = "https://partners.shopify.com/";
-const SETUP_DOC_URL = "https://www.siliconretail.com/docs/shopify-partners-setup";
+const SETUP_DOC_URL =
+  "https://www.siliconretail.com/docs/shopify-partners-setup";
 
-const DEFAULT_SCOPES = "read_products, read_inventory, read_orders, write_orders";
+const DEFAULT_SCOPES =
+  "read_products, read_inventory, read_orders, write_orders";
 
 export async function stepShopify(ctx: StepContext): Promise<StepOutcome> {
   printPartnersGuidance(ctx);
+
+  if (!ctx.seed) {
+    // Best-effort: open the setup doc before the prompt blocks, so the
+    // Partners tab is already on-screen while the user is still reading
+    // the guidance. Headless SSH / no display → browser can't open; we
+    // print the URL so the user can paste it into a browser on another
+    // machine and carry on.
+    const opened = await openBrowser(SETUP_DOC_URL);
+    if (!opened) {
+      process.stdout.write(
+        `  (open this link on another device to follow along:\n   ${SETUP_DOC_URL})\n\n`,
+      );
+    }
+  }
 
   const clientId =
     ctx.seed?.shopifyClientId ??
@@ -30,21 +56,15 @@ export async function stepShopify(ctx: StepContext): Promise<StepOutcome> {
     ctx.seed?.shopifyClientSecret ??
     (await askForNonEmpty(ctx, "Shopify Partners client_secret", true));
 
-  if (!ctx.seed) {
-    const opened = await openBrowser(PARTNERS_URL);
-    if (!opened) {
-      process.stdout.write(
-        `  (open ${PARTNERS_URL} manually to create / view your app)\n`,
-      );
-    }
-  }
-
   upsertEnv(ctx.layout.envPath, {
     SHOPIFY_CLIENT_ID: clientId,
     SHOPIFY_CLIENT_SECRET: clientSecret,
   });
 
-  return { applied: true, summary: "Shopify Partners credentials stored in .env" };
+  return {
+    applied: true,
+    summary: "Shopify Partners credentials stored in .env",
+  };
 }
 
 /**
@@ -59,15 +79,22 @@ function printPartnersGuidance(ctx: StepContext): void {
     "",
   );
   process.stdout.write(
-    `\n  Before you paste credentials below, make sure your Shopify Partners app\n` +
-      `  has these three values configured (see ${SETUP_DOC_URL}):\n` +
+    `\n  Paste these three values into your Shopify Partners app config\n` +
+      `  (setup guide: ${SETUP_DOC_URL}):\n` +
       `\n` +
       `    App URL:              ${selfUrl}/admin/shopify\n` +
       `    Allowed redirect URL: ${selfUrl}/auth/shopify/callback\n` +
       `    Admin API scopes:     ${DEFAULT_SCOPES}\n` +
       `\n` +
-      `  Don't have a Partners app yet? Follow the ~10-minute setup at the URL\n` +
-      `  above, then come back — the wizard will wait here.\n` +
+      `  ┌───────────────────────────────────────────────────────────────────┐\n` +
+      `  │  DO NOT CLOSE THIS TERMINAL.                                      │\n` +
+      `  │                                                                   │\n` +
+      `  │  The 'client_id' prompt below is blocking. Open your Partners     │\n` +
+      `  │  app in the browser tab that just opened (~10-minute setup if     │\n` +
+      `  │  starting from scratch), copy client_id + client_secret, then     │\n` +
+      `  │  come back and paste them here. The wizard literally waits at     │\n` +
+      `  │  the prompt — closing this terminal loses your progress.          │\n` +
+      `  └───────────────────────────────────────────────────────────────────┘\n` +
       `\n`,
   );
 }

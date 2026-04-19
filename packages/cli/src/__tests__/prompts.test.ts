@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { createPrompter, type PromptIO } from "../shared/prompts.js";
+import {
+  createPrompter,
+  InputClosedError,
+  type PromptIO,
+} from "../shared/prompts.js";
 
 function mockIO(
   answers: string[],
@@ -37,10 +41,22 @@ describe("createPrompter.ask", () => {
     expect(await p.ask("name?", { default: "Bob" })).toBe("Bob");
   });
 
-  it("returns default on EOF (stdin closed)", async () => {
+  it("returns default on EOF (stdin closed) when a default is provided", async () => {
     const io = mockIO([], true);
     const p = createPrompter(io);
     expect(await p.ask("name?", { default: "Bob" })).toBe("Bob");
+  });
+
+  it("throws InputClosedError on EOF when no default is set", async () => {
+    // Without a default there's nothing to fall back to — we must throw a
+    // diagnostic error instead of looping forever on a dead stream (which
+    // caused silent exits under the shipped Bun binary when the user
+    // misread the step-6 guidance and closed the terminal mid-prompt).
+    const io = mockIO([], true);
+    const p = createPrompter(io);
+    await expect(p.ask("Shopify Partners client_id")).rejects.toBeInstanceOf(
+      InputClosedError,
+    );
   });
 
   it("re-asks on validator failure until valid", async () => {
@@ -95,6 +111,41 @@ describe("createPrompter.askSecret", () => {
     const p = createPrompter(io);
     expect(await p.askSecret("pw?")).toBe("shh");
     expect(io.output).toContain("SECRET:pw?");
+  });
+
+  it("throws InputClosedError on EOF (no silent empty string)", async () => {
+    const io = mockIO([], true);
+    const p = createPrompter(io);
+    await expect(
+      p.askSecret("Shopify Partners client_secret"),
+    ).rejects.toBeInstanceOf(InputClosedError);
+  });
+});
+
+describe("createPrompter.askYesNo stdin-closure semantics", () => {
+  it("returns the default on EOF when one is provided", async () => {
+    const io = mockIO([], true);
+    const p = createPrompter(io);
+    expect(await p.askYesNo("ok?", { default: true })).toBe(true);
+  });
+
+  it("throws InputClosedError on EOF when no default is set", async () => {
+    const io = mockIO([], true);
+    const p = createPrompter(io);
+    await expect(p.askYesNo("ok?")).rejects.toBeInstanceOf(InputClosedError);
+  });
+});
+
+describe("createPrompter.askChoice stdin-closure semantics", () => {
+  it("throws InputClosedError on EOF (non-TTY fallback path)", async () => {
+    const io = mockIO([], true);
+    const p = createPrompter(io);
+    await expect(
+      p.askChoice("pick", [
+        { key: "a", label: "Apple" },
+        { key: "b", label: "Banana" },
+      ]),
+    ).rejects.toBeInstanceOf(InputClosedError);
   });
 });
 
