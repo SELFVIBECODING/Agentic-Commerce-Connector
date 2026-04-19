@@ -26,7 +26,7 @@ Local-only testing is possible using `ngrok` / Cloudflare Tunnel for the HTTPS c
 **Two ways to connect Shopify.** The wizard's step 8 asks you to pick:
 
 - **Self-hosted** — you register your own Shopify Partners account + create a Custom Distribution app. ~10-minute one-time setup via [SHOPIFY_PARTNERS_SETUP.md](./SHOPIFY_PARTNERS_SETUP.md). You hold your own `client_secret`.
-- **Silicon Retail relayer** — Silicon Retail operates a shared Partners app at `api.siliconretail.com/relayer`. You type your shop domain, click one link, authorize on Shopify, done. No Partners account. **Runtime traffic never touches the relay** (see [docs/spec/relayer-protocol.md](./spec/relayer-protocol.md)); it participates only during install and, later, token refresh.
+- **Silicon Retail relayer** — Silicon Retail operates a shared Partners app at `api.siliconretail.com/relayer`. You type your shop domain, click one link, authorize on Shopify, done. No Partners account. **Runtime traffic never touches the relay** (see [docs/spec/relayer-protocol.md](./spec/relayer-protocol.md)); it participates only during install and, later, token refresh. For EEA-based merchants, a DPA template is available at [docs/legal/DPA-silicon-retail-relay.md](./legal/DPA-silicon-retail-relay.md) — see §A.2 below.
 
 If you're unsure, pick the relayer — you can always re-run `acc init` and switch to self-hosted later.
 
@@ -346,6 +346,32 @@ If you can't put the connector on public HTTPS yet, use Shopify's **Develop apps
    ```
 
 Part 2 and Part 3 (skill package and marketplace publish) are unchanged — they're independent of how the connector acquired its Shopify credentials.
+
+### A.2 Data processing — Silicon Retail relayer
+
+If you pick the relayer option in step 8 of the wizard, Silicon Retail
+processes a narrow slice of data on your behalf during install and
+(for expiring-token apps) subsequent token refresh:
+
+- Your Shopify shop domain (`*.myshopify.com`).
+- The OAuth access token and refresh token — encrypted at rest with
+  AES-256-GCM; the relay operator holds the key.
+- Your self-hosted connector URL, stored so GDPR webhooks can be
+  forwarded to it.
+- Shopify's three mandatory GDPR webhook payloads, in transit, until
+  forwarding completes.
+
+**Runtime traffic does not flow through the relay.** Once your pair
+session completes, your connector talks to Shopify directly.
+
+A template Data Processing Addendum is available at
+[docs/legal/DPA-silicon-retail-relay.md](./legal/DPA-silicon-retail-relay.md).
+**It is a template, not legal advice** — review with your own counsel
+before relying on it for GDPR / CCPA / other compliance.
+
+If data-processing terms would slow your install, you can always
+choose the **self-hosted** path at step 8 instead. No data beyond the
+Shopify OAuth callback ever reaches the relay in that case.
 
 ---
 

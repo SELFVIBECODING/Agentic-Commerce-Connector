@@ -54,14 +54,22 @@ Anyone can build a compatible marketplace against the public spec.
 
 ## Quick Start
 
-**Before you start:** Shopify merchants need a one-time Partners app
-configured with this connector's URLs. Follow
-[docs/SHOPIFY_PARTNERS_SETUP.md](./docs/SHOPIFY_PARTNERS_SETUP.md)
-(~10 minutes) to get your `client_id` + `client_secret` before running
-the wizard below.
+**Two install paths.** Shopify merchants pick one in step 8 of the wizard:
 
-You also need a public HTTPS endpoint for the connector (Render, Fly, a
-VPS behind Caddy/nginx, or Cloudflare Tunnel — anything that serves HTTPS).
+- **Self-hosted Partners (default, full control).** You register your own
+  Shopify Partners account and hold your own `client_secret`. ~10-minute
+  one-time setup via
+  [docs/SHOPIFY_PARTNERS_SETUP.md](./docs/SHOPIFY_PARTNERS_SETUP.md).
+- **Silicon Retail relayer (zero setup).** Silicon Retail operates a
+  shared Partners app at `api.siliconretail.com/relayer`. You type your
+  shop domain, click one link, done. No Partners account, no
+  `client_secret` on your box. **Runtime traffic never touches the
+  relay** — see the [protocol spec](./docs/spec/relayer-protocol.md)
+  and [merchant walkthrough](./docs/MERCHANT_ONBOARDING.md#13-run-acc-init-shopify-one-shot-wizard).
+
+Either way, you also need a public HTTPS endpoint for the connector
+(Render, Fly, a VPS behind Caddy/nginx, or Cloudflare Tunnel — anything
+that serves HTTPS).
 
 ### 1. Install the binary
 
