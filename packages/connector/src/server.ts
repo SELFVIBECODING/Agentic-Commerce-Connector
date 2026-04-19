@@ -708,6 +708,11 @@ async function startHttpModeOAuthOnly(): Promise<void> {
   const webhookRouter = createShopifyWebhookRouter({
     oauthConfig,
     installationStore: storage.store,
+    // Per-shop HMAC key the relay uses to sign forwarded GDPR webhooks.
+    // Only set for connectors installed via `acc init shopify --via=...`
+    // — classic Partners installs leave this undefined and continue to
+    // validate inbound webhooks exclusively against client_secret.
+    relaySecret: process.env.ACC_RELAY_SECRET?.trim() || undefined,
   });
   registerShopifyWebhookRouter(webhookRouter);
 
