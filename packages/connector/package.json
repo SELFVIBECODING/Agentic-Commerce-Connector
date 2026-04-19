@@ -19,6 +19,10 @@
     "./sqlite": {
       "types": "./build/services/db/sqlite.d.ts",
       "default": "./build/services/db/sqlite.js"
+    },
+    "./shopify-oauth": {
+      "types": "./build/adapters/shopify/oauth/index.d.ts",
+      "default": "./build/adapters/shopify/oauth/index.js"
     }
   },
   "files": [
