@@ -35,10 +35,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+      # oven-sh/setup-bun@v2 pulls the bun binary from github.com release
+      # assets, which occasionally 504s (happened on v0.4.1's release run).
+      # Wrap the install in nick-fields/retry so a single upstream blip
+      # doesn't sink the whole 4-target matrix. Uses bun.sh/install's
+      # official shell installer + writes the install dir to $GITHUB_PATH
+      # so downstream steps (`bun run …`) find the binary on PATH.
+      - name: Install Bun (with retry)
+        uses: nick-fields/retry@v3
         with:
-          bun-version: latest
+          timeout_minutes: 5
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: |
+            curl -fsSL https://bun.sh/install | bash
+            echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
 
       - name: Setup Node (for workspace install)
         uses: actions/setup-node@v4
