@@ -15,7 +15,7 @@
 | You need | Why | Where |
 |---|---|---|
 | A Shopify store (any plan) | Source of products / checkout | `myshop.myshopify.com` |
-| A Shopify Partners account (free) + configured app | To issue OAuth credentials | Follow **[SHOPIFY_PARTNERS_SETUP.md](./SHOPIFY_PARTNERS_SETUP.md)** — ~10 minutes, one-time |
+| A Shopify Partners app (self-hosted path only) | To issue OAuth credentials when you own the Partners account | Follow **[SHOPIFY_PARTNERS_SETUP.md](./SHOPIFY_PARTNERS_SETUP.md)** — ~10 min, one-time. **Skip this row if you plan to use the Silicon Retail relayer install option** (see §1.3). |
 | A host for the ACC connector | Must have **public HTTPS** | Render / Fly / your own VPS + Cloudflare Tunnel |
 | A wallet you control | Sign marketplace submissions | MetaMask / any EOA; keep the private key safe |
 
@@ -23,11 +23,12 @@
 
 Local-only testing is possible using `ngrok` / Cloudflare Tunnel for the HTTPS callback, or by using the manual-token fallback (see §A).
 
-**Do the Partners setup first.** `acc init shopify` will ask for the
-`client_id` and `client_secret` that only exist after you've configured
-a Partners app with your connector's URLs. The [SHOPIFY_PARTNERS_SETUP](./SHOPIFY_PARTNERS_SETUP.md)
-doc walks through it in ~10 minutes; doing it later means interrupting the
-wizard mid-flow.
+**Two ways to connect Shopify.** The wizard's step 8 asks you to pick:
+
+- **Self-hosted** — you register your own Shopify Partners account + create a Custom Distribution app. ~10-minute one-time setup via [SHOPIFY_PARTNERS_SETUP.md](./SHOPIFY_PARTNERS_SETUP.md). You hold your own `client_secret`.
+- **Silicon Retail relayer** — Silicon Retail operates a shared Partners app at `api.siliconretail.com/relayer`. You type your shop domain, click one link, authorize on Shopify, done. No Partners account. **Runtime traffic never touches the relay** (see [docs/spec/relayer-protocol.md](./spec/relayer-protocol.md)); it participates only during install and, later, token refresh.
+
+If you're unsure, pick the relayer — you can always re-run `acc init` and switch to self-hosted later.
 
 ---
 
@@ -61,7 +62,12 @@ and the init wizard in one shot.
 In all three cases, note the public URL — we'll call it `ACC_URL` below,
 e.g. `https://acc.myshop.com`.
 
-### 1.2 Create your Shopify Partners app
+### 1.2 (Self-hosted path only) Create your Shopify Partners app
+
+**Skip this section if you'll pick the Silicon Retail relayer in
+step 8 of the wizard** — that option delegates Partners app
+ownership to Silicon Retail. Come back here only if you prefer to
+hold your own `client_secret`.
 
 Follow **[SHOPIFY_PARTNERS_SETUP.md](./SHOPIFY_PARTNERS_SETUP.md)** — ~10
 minutes. The doc walks through:
@@ -94,14 +100,16 @@ The 10-step wizard:
 4. **Encryption key** — generates a 32-byte AES-256 key at `keys/enc.key` (0600) and mirrors to `.env: ACC_ENCRYPTION_KEY`.
 5. **Marketplace signer** — generate a new EOA, import an existing `0x…` hex key, or skip. Writes `keys/signer.key` (0600). Optional at-rest encryption via `--encrypt-signer`.
 6. **Payment methods** — asks which payment rails your storefront accepts. Phase 1 ships with only one option: **"No payment methods yet"**. Writes `PAYMENT_PROVIDER=none` to `.env`; the published skill advertises `supported_payments: []`. Additional rails (Nexus/PlatON, Stripe, x402) arrive in future releases — re-run `acc init` (choice `b`) when they land to pick one.
-7. **Shopify Partners creds** — prints the exact App URL / redirect URL / scopes you should have pasted into Partners (sanity check), then prompts for `client_id` + `client_secret`.
-8. **SQLite migration** — creates `db/acc.sqlite` with the `shopify_installations` table.
+7. **SQLite migration** — creates `db/acc.sqlite` with the `shopify_installations` table. (Must run before step 8 because the relayer branch writes an installation row on successful OAuth.)
+8. **Shopify install method** — single-choice menu:
+   - **Self-hosted** — prints the three values you should have pasted into Partners (App URL / redirect URL / scopes) as a sanity check, then prompts for your `client_id` + `client_secret`.
+   - **Silicon Retail relayer** — prompts for your shop domain, opens the install URL (pre-built against `api.siliconretail.com/relayer`), polls every 2s while you approve on Shopify, persists the resulting tokens to local SQLite + writes relay markers to `.env`. No `client_secret` ever lives on your server.
 9. **Categories (multi-select)** — pick one or more from the Silicon Retail taxonomy: **Fashion / Electronics / Books / Home / Food / Services / Digital / Travel**. Type comma-separated letters (e.g. `a,c,h` → Fashion, Books, Travel). Order is preserved by catalog position (not input order) so the published frontmatter is deterministic.
 10. **Skill template** — writes `skill/acc-skill.md` with your selected categories and auto-derived name/URLs. Auto-served at `${ACC_URL}/.well-known/acc-skill.md` (see Part 2).
 
 Finale prints `config.json` summary + next-step pointer.
 
-**Re-running:** `acc init shopify` detects an existing `config.json` and offers: keep-as-is / update-Shopify-creds-only / start-over (backs up old config) / cancel.
+**Re-running:** `acc init shopify` detects an existing `config.json` and offers: keep-as-is / re-run Shopify install (switch method or rotate creds) / start-over (backs up old config) / cancel.
 
 ### 1.4 Connect your Shopify store
 
