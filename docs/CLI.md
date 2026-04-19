@@ -60,7 +60,7 @@ Re-running detects an existing `config.json` and offers:
 | Key | Action |
 |---|---|
 | `a` | Keep as-is and exit |
-| `b` | Update Shopify credentials only (skip to step 7) |
+| `b` | Re-run Shopify install (skip to step 8 — pick self-hosted or relayer) |
 | `c` | Start over (backs up old config to `config.json.bak`) |
 | `d` | Cancel |
 

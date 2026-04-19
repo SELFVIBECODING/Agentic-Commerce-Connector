@@ -170,11 +170,17 @@ function platformSteps(
 ): Array<readonly [string, (c: StepContext) => Promise<{ summary: string }>]> {
   if (platform === "shopify") {
     if (action === "shopify-only") {
-      // Re-entrant path to rotate Shopify Partners creds in isolation.
-      // The numbering matches the full 10-step flow for consistency in
-      // printed output.
-      return [["7/10 Shopify Partners creds", stepShopify]];
+      // Re-entrant path to re-run just the Shopify install. The merchant
+      // can flip between self-hosted Partners and the Silicon Retail
+      // relayer here — SQLite has already been migrated on the original
+      // install, so the relayer branch can persist its installation row
+      // immediately.
+      return [["7/10 Shopify install method", stepShopify]];
     }
+    // Reorder from the original 8-step wizard: SQLite migration now runs
+    // BEFORE the Shopify install step because the relayer branch writes
+    // an encrypted installation row the moment the pair/poll returns
+    // ready — the schema must exist by then.
     return [
       ["1/10 Preflight", stepPreflight],
       ["2/10 Data directory", stepDataDir],
@@ -182,8 +188,8 @@ function platformSteps(
       ["4/10 Encryption key", stepEncKey],
       ["5/10 Marketplace signer", stepSigner],
       ["6/10 Payment methods", stepPayment],
-      ["7/10 Shopify Partners creds", stepShopify],
-      ["8/10 SQLite migration", stepSqlite],
+      ["7/10 SQLite migration", stepSqlite],
+      ["8/10 Shopify install method", stepShopify],
       ["9/10 Categories", stepCategories],
       ["10/10 Skill template", stepSkill],
     ];
@@ -298,7 +304,10 @@ async function resolveReentrantAction(
     `Found existing config at ${layout.configPath}. What next?`,
     [
       { key: "a", label: "keep as-is (exit)" },
-      { key: "b", label: "update Shopify credentials only" },
+      {
+        key: "b",
+        label: "re-run Shopify install (switch method or rotate creds)",
+      },
       { key: "c", label: "start over (backs up current)" },
       { key: "d", label: "cancel" },
     ],
