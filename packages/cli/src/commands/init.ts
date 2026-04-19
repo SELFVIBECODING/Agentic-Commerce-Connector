@@ -335,13 +335,18 @@ function printFinaleSummary(
   layout: DataDirLayout,
   platform: string,
 ): void {
+  // Column is padded to the width of "signer wallet" (13 chars) so the
+  // colons line up. "signer wallet" (not just "wallet") because a bare
+  // "wallet" reads as a payment wallet at a glance, when in fact this
+  // is the EIP-712 signing wallet used to sign marketplace submissions
+  // — no funds, never receives payments.
   process.stdout.write(
     `\n${bold(green("✓ acc init complete"))} ${dim(`(platform: ${platform})`)}\n` +
-      `  ${dim("data dir")} : ${layout.root}\n` +
-      `  ${dim("registry")} : ${cfg.registry}\n` +
-      `  ${dim("selfUrl")}  : ${cfg.selfUrl}\n` +
-      `  ${dim("wallet")}   : ${cfg.wallet?.address ?? dim("(not configured)")}\n` +
-      `  ${dim("skill")}    : ${cfg.skillMdPath}\n` +
+      `  ${dim("data dir     ")} : ${layout.root}\n` +
+      `  ${dim("registry     ")} : ${cfg.registry}\n` +
+      `  ${dim("selfUrl      ")} : ${cfg.selfUrl}\n` +
+      `  ${dim("signer wallet")} : ${cfg.wallet?.address ?? dim("(not configured)")}\n` +
+      `  ${dim("skill        ")} : ${cfg.skillMdPath}\n` +
       `\n${bold("Next:")} ${brightBlue("acc start")}\n`,
   );
 }
