@@ -40,18 +40,36 @@ token. The relay participates only at install time and (for
 
 ## 2. Base URL
 
-Every endpoint in this spec is rooted at a relay base URL. For the
-reference implementation that is:
+Every endpoint in this spec is rooted at a relay base URL. The CLI
+takes the base URL as a configuration value (`ACC_INSTALL_RELAY_URL` in
+`.env` after install completes) and appends paths literally. A relay
+MUST NOT redirect between base URLs mid-flow; the CLI treats a 3xx on
+the pair routes as a fatal error.
+
+**Silicon Retail reference implementation — long-term target URL:**
 
 ```
 https://api.siliconretail.com/relayer
 ```
 
+**Silicon Retail reference implementation — current URL (interim):**
+
+```
+https://acc-marketplace-relayer.onrender.com/relayer
+```
+
+The siliconretail.com path-routing layer is blocked on a Cloudflare /
+Render custom-domain configuration; until that lands, the live relay
+serves on its managed onrender.com hostname. The CLI's
+`DEFAULT_RELAY_URL` constant points at the onrender URL during the
+interim — that's the address merchants picking "Silicon Retail
+relayer" in `acc init shopify` actually hit. When the branded host
+comes online the CLI's default flips back to
+`api.siliconretail.com/relayer` in a one-line code change. The wire
+protocol is unchanged either way.
+
 All paths below (`/pair/new`, `/auth/shopify/callback`, etc.) are
-relative to that base. The CLI takes the base URL as a configuration
-value (`ACC_INSTALL_RELAY_URL` in `.env` after install completes) and
-appends paths literally. A relay MUST NOT redirect between base URLs
-mid-flow; the CLI treats a 3xx on the pair routes as a fatal error.
+relative to whichever base the operator is serving.
 
 ---
 
