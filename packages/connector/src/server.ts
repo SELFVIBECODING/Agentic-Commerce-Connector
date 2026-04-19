@@ -33,6 +33,10 @@ import {
   getCheckoutStatus,
 } from "./services/checkout-session.js";
 import { setOrderPrefix } from "./services/order-store.js";
+import {
+  startRelayRefreshWorker,
+  type RelayRefreshWorkerHandle,
+} from "./services/relay-refresh-worker.js";
 import type { CatalogAdapter, MerchantAdapter } from "./adapters/types.js";
 import {
   createShopifyAdapters,
@@ -120,6 +124,11 @@ let catalog: CatalogAdapter;
 let merchant: MerchantAdapter | null;
 let productCache: ReturnType<typeof createProductCache>;
 let processedEventStore: ProcessedEventStore;
+// Phase-2 relay refresh worker. Only started when ACC_INSTALL_RELAY_URL
+// is set (relay-backed install path) AND the installation store exists
+// (OAuth mode). Stopped on SIGTERM to avoid dangling timers under graceful
+// shutdown.
+let relayRefreshWorker: RelayRefreshWorkerHandle | null = null;
 
 const ORDER_PREFIX_MAP: Record<string, string> = {
   shopify: "SHP",
@@ -711,6 +720,31 @@ async function startHttpModeOAuthOnly(): Promise<void> {
   });
   registerShopifyWebhookRouter(webhookRouter);
 
+  // Phase 2: if the connector was installed via a relay (shared Partners
+  // app path), start a background worker that periodically POSTs to
+  // `${relayUrl}/refresh` for rows within 1h of token_expires_at. Self-
+  // hosted Partners installs never set this env var, so the worker
+  // stays dormant in that path. Stopped on SIGTERM (see handler below).
+  const relayUrl = process.env.ACC_INSTALL_RELAY_URL?.trim();
+  if (relayUrl) {
+    const envInterval = Number.parseInt(
+      process.env.ACC_REFRESH_INTERVAL_MS ?? "",
+      10,
+    );
+    const intervalMs =
+      Number.isFinite(envInterval) && envInterval > 0 ? envInterval : undefined;
+    relayRefreshWorker = startRelayRefreshWorker({
+      store: storage.store,
+      relayUrl,
+      intervalMs,
+    });
+    console.error(
+      `[Server] Relay refresh worker started — relay=${relayUrl} interval=${
+        intervalMs ?? "15min (default)"
+      }`,
+    );
+  }
+
   startPortal(config);
   console.error(
     `Commerce Agent started (HTTP, OAuth-only, port ${config.portalPort})`,
@@ -823,6 +857,8 @@ async function startHttpMode(): Promise<void> {
 
 process.on("SIGTERM", () => {
   stopReconciler();
+  relayRefreshWorker?.stop();
+  relayRefreshWorker = null;
   closePool().catch(() => {});
 });
 
